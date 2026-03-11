@@ -1,0 +1,11 @@
+# Core
+numpy>=1.24.0
+opencv-python>=4.8.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Optional performance
+pillow>=10.0.0
