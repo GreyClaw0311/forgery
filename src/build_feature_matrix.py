@@ -81,12 +81,18 @@ def extract_feature_score(feature_name, feature_module, image_path):
         return None
 
 
-def build_feature_matrix():
+def build_feature_matrix(data_dir=None):
     """构建特征矩阵"""
     print("=" * 60)
     print("构建特征矩阵")
     print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
+    
+    # 使用传入的数据目录或默认目录
+    if data_dir is None:
+        data_dir = DATA_DIR
+    
+    print(f"数据目录: {data_dir}")
     
     # 收集所有图像路径和标签
     samples = []
@@ -228,4 +234,9 @@ def build_feature_matrix():
 
 
 if __name__ == '__main__':
-    X, y, feature_names, df = build_feature_matrix()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir', type=str, default=None, help='数据目录路径')
+    args = parser.parse_args()
+    
+    X, y, feature_names, df = build_feature_matrix(data_dir=args.data_dir)
