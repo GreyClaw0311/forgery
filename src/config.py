@@ -28,6 +28,24 @@ FEATURES = [
     'metadata'       # 元数据分析
 ]
 
+# 变体特征列表
+VARIANT_FEATURES = [
+    'hog',           # 方向梯度直方图
+    'color',         # 颜色一致性
+    'adjacency',     # 邻域一致性
+    'wavelet',       # 小波分析
+    'gradient',      # 梯度一致性
+    'block_dct',     # 分块DCT
+    'jpeg_ghost',    # JPEG Ghost
+    'local_noise',   # 局部噪声
+    'resampling',    # 重采样检测
+    'contrast',      # 对比度一致性
+    'blur',          # 模糊检测
+    'saturation',    # 饱和度一致性
+    'splicing',      # 拼接检测
+    'jpeg_block'     # JPEG块效应
+]
+
 # 默认阈值
 DEFAULT_THRESHOLDS = {
     'ela': 0.5,
