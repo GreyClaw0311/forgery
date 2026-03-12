@@ -1,0 +1,82 @@
+{
+  "timestamp": "2026-03-12T10:52:24.010856",
+  "dataset": {
+    "total_samples": 46,
+    "tampered": 36,
+    "normal": 10,
+    "num_features": 24
+  },
+  "models": {
+    "SVM (RBF)": {
+      "cv_f1_mean": 0.6109372109372109,
+      "cv_f1_std": 0.0738387811154392,
+      "accuracy": 0.7608695652173914,
+      "precision": 0.8861283643892339,
+      "recall": 0.7608695652173914,
+      "f1_score": 0.7817349918377671,
+      "confusion_matrix": [
+        [
+          10,
+          0
+        ],
+        [
+          11,
+          25
+        ]
+      ]
+    },
+    "Random Forest": {
+      "cv_f1_mean": 0.6414814814814814,
+      "cv_f1_std": 0.11912806218059033,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "confusion_matrix": [
+        [
+          10,
+          0
+        ],
+        [
+          0,
+          36
+        ]
+      ]
+    },
+    "Logistic Regression": {
+      "cv_f1_mean": 0.6281481481481481,
+      "cv_f1_std": 0.07516237566794562,
+      "accuracy": 0.8043478260869565,
+      "precision": 0.8707117029720435,
+      "recall": 0.8043478260869565,
+      "f1_score": 0.8191750278706801,
+      "confusion_matrix": [
+        [
+          9,
+          1
+        ],
+        [
+          8,
+          28
+        ]
+      ]
+    }
+  },
+  "selected_features": [
+    "ela",
+    "edge",
+    "lbp",
+    "histogram",
+    "fft",
+    "hog",
+    "adjacency",
+    "wavelet",
+    "gradient",
+    "local_noise",
+    "resampling",
+    "contrast",
+    "blur",
+    "saturation",
+    "jpeg_block"
+  ]
+}

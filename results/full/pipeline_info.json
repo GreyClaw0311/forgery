@@ -1,0 +1,25 @@
+{
+  "feature_names": [
+    "jpeg_block",
+    "contrast",
+    "saturation",
+    "jpeg_ghost",
+    "fft",
+    "cfa",
+    "edge",
+    "color",
+    "resampling",
+    "splicing"
+  ],
+  "optimal_threshold": 0.85,
+  "model_file": "optimized_model.pkl",
+  "scaler_file": "optimized_scaler.pkl",
+  "created_at": "2026-03-12T22:17:00.343837",
+  "performance": {
+    "fpr": 0.3684,
+    "fnr": 0.1138,
+    "precision": 0.9787,
+    "recall": 0.8862,
+    "f1": 0.9302
+  }
+}
