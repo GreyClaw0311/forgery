@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-训练入口脚本
-用于训练图像篡改检测模型
+图像篡改检测模型训练脚本
 
 使用方法:
     python train/train.py --data_dir ./data --output_dir ./release/models
@@ -12,54 +11,19 @@ import sys
 import argparse
 import json
 import time
+import pickle
 import numpy as np
-import pandas as pd
-from datetime import datetime
 
-# 添加项目根目录到路径
+# 添加项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.features import *
+from train.features import FEATURE_NAMES, extract_all_features
+
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 from sklearn.preprocessing import RobustScaler
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
-
-
-# Top 10 特征 (基于特征重要性)
-TOP_FEATURES = [
-    'jpeg_block',   # 10.48%
-    'contrast',     # 8.98%
-    'saturation',   # 7.20%
-    'jpeg_ghost',   # 7.62%
-    'fft',          # 14.23%
-    'cfa',          # 9.53%
-    'edge',         # 8.48%
-    'color',        # 11.45%
-    'resampling',   # 12.09%
-    'splicing',     # 9.94%
-]
-
-
-def extract_features_for_image(image_path, feature_names):
-    """提取单张图片的特征"""
-    features = []
-    
-    for fname in feature_names:
-        try:
-            module = __import__(f'src.features.feature_{fname}', fromlist=[''])
-            detect_func = getattr(module, f'detect_tampering_{fname}', None)
-            if detect_func:
-                _, score = detect_func(image_path)
-                features.append(float(score))
-            else:
-                features.append(0.0)
-        except Exception as e:
-            print(f"    [警告] {fname} 提取失败: {e}")
-            features.append(0.0)
-    
-    return features
 
 
 def collect_samples(data_dir):
@@ -102,7 +66,7 @@ def collect_samples(data_dir):
     return samples
 
 
-def build_feature_matrix(data_dir, output_dir, feature_names):
+def build_feature_matrix(data_dir, output_dir):
     """构建特征矩阵"""
     print("=" * 60)
     print("步骤1: 构建特征矩阵")
@@ -112,6 +76,10 @@ def build_feature_matrix(data_dir, output_dir, feature_names):
     print("\n收集样本...")
     samples = collect_samples(data_dir)
     total = len(samples)
+    
+    if total == 0:
+        print("错误: 未找到任何样本!")
+        return None, None
     
     print(f"总样本: {total}")
     print(f"  Easy: {sum(1 for s in samples if s['category']=='easy')}")
@@ -125,9 +93,12 @@ def build_feature_matrix(data_dir, output_dir, feature_names):
     
     start_time = time.time()
     for i, sample in enumerate(samples):
-        features = extract_features_for_image(sample['path'], feature_names)
-        X_list.append(features)
-        y_list.append(sample['label'])
+        try:
+            features = extract_all_features(sample['path'])
+            X_list.append(features)
+            y_list.append(sample['label'])
+        except Exception as e:
+            print(f"  警告: {sample['path']} 特征提取失败: {e}")
         
         if (i + 1) % 50 == 0:
             elapsed = time.time() - start_time
@@ -137,15 +108,13 @@ def build_feature_matrix(data_dir, output_dir, feature_names):
     X = np.array(X_list)
     y = np.array(y_list)
     
+    print(f"\n特征矩阵: {X.shape}")
+    print(f"标签分布: 篡改={np.sum(y==1)}, 正常={np.sum(y==0)}")
+    
     # 保存
     os.makedirs(output_dir, exist_ok=True)
-    np.savez(os.path.join(output_dir, 'feature_matrix.npz'), X=X, y=y, feature_names=feature_names)
+    np.savez(os.path.join(output_dir, 'feature_matrix.npz'), X=X, y=y, feature_names=FEATURE_NAMES)
     
-    df = pd.DataFrame(X, columns=feature_names)
-    df['label'] = y
-    df.to_csv(os.path.join(output_dir, 'feature_matrix.csv'), index=False)
-    
-    print(f"\n特征矩阵已保存: {output_dir}")
     return X, y
 
 
@@ -172,8 +141,8 @@ def train_model(X, y, output_dir):
     n_tampered = sum(y_train == 1)
     n_normal = sum(y_train == 0)
     
-    weight_tampered = n_samples / (2 * n_tampered)
-    weight_normal = n_samples / (2 * n_normal)
+    weight_tampered = n_samples / (2 * n_tampered) if n_tampered > 0 else 1
+    weight_normal = n_samples / (2 * n_normal) if n_normal > 0 else 1
     
     print(f"\n类别权重:")
     print(f"  篡改样本权重: {weight_tampered:.2f}")
@@ -207,13 +176,13 @@ def train_model(X, y, output_dir):
     y_pred = model.predict(X_test)
     
     acc = accuracy_score(y_test, y_pred)
-    prec = precision_score(y_test, y_pred)
-    rec = recall_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred, zero_division=0)
+    rec = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
     
     cm = confusion_matrix(y_test, y_pred)
-    fpr = cm[0, 1] / (cm[0, 0] + cm[0, 1])
-    fnr = cm[1, 0] / (cm[1, 0] + cm[1, 1])
+    fpr = cm[0, 1] / (cm[0, 0] + cm[0, 1]) if (cm[0, 0] + cm[0, 1]) > 0 else 0
+    fnr = cm[1, 0] / (cm[1, 0] + cm[1, 1]) if (cm[1, 0] + cm[1, 1]) > 0 else 0
     
     print(f"\n测试集评估:")
     print(f"  Accuracy:  {acc:.4f}")
@@ -223,33 +192,7 @@ def train_model(X, y, output_dir):
     print(f"  FPR:       {fpr:.4f}")
     print(f"  FNR:       {fnr:.4f}")
     
-    # 保存模型
-    import pickle
-    
-    model_path = os.path.join(output_dir, 'model.pkl')
-    scaler_path = os.path.join(output_dir, 'scaler.pkl')
-    
-    with open(model_path, 'wb') as f:
-        pickle.dump(model, f)
-    with open(scaler_path, 'wb') as f:
-        pickle.dump(scaler, f)
-    
-    print(f"\n模型已保存: {model_path}")
-    
-    return model, scaler, {
-        'cv_f1_mean': float(cv_scores.mean()),
-        'cv_f1_std': float(cv_scores.std()),
-        'accuracy': float(acc),
-        'precision': float(prec),
-        'recall': float(rec),
-        'f1_score': float(f1),
-        'fpr': float(fpr),
-        'fnr': float(fnr)
-    }
-
-
-def optimize_threshold(model, X_test, y_test, output_dir):
-    """优化阈值"""
+    # 阈值优化
     print("\n" + "=" * 60)
     print("步骤3: 阈值优化")
     print("=" * 60)
@@ -265,40 +208,48 @@ def optimize_threshold(model, X_test, y_test, output_dir):
     print("-" * 50)
     
     for threshold in np.arange(0.3, 0.9, 0.05):
-        y_pred = (y_proba >= threshold).astype(int)
+        y_pred_t = (y_proba >= threshold).astype(int)
         
-        f1 = f1_score(y_test, y_pred)
-        prec = precision_score(y_test, y_pred)
-        rec = recall_score(y_test, y_pred)
+        f1_t = f1_score(y_test, y_pred_t, zero_division=0)
+        prec_t = precision_score(y_test, y_pred_t, zero_division=0)
+        rec_t = recall_score(y_test, y_pred_t, zero_division=0)
         
-        cm = confusion_matrix(y_test, y_pred)
-        fpr = cm[0, 1] / (cm[0, 0] + cm[0, 1]) if (cm[0, 0] + cm[0, 1]) > 0 else 0
+        cm_t = confusion_matrix(y_test, y_pred_t)
+        fpr_t = cm_t[0, 1] / (cm_t[0, 0] + cm_t[0, 1]) if (cm_t[0, 0] + cm_t[0, 1]) > 0 else 0
         
-        print(f"{threshold:>8.2f} {f1:>8.4f} {prec:>10.4f} {rec:>8.4f} {fpr:>8.4f}")
+        print(f"{threshold:>8.2f} {f1_t:>8.4f} {prec_t:>10.4f} {rec_t:>8.4f} {fpr_t:>8.4f}")
         
-        score = f1 - fpr * 0.5
+        score = f1_t - fpr_t * 0.5
         if score > best_score:
             best_score = score
             best_threshold = threshold
-            best_metrics = {
-                'f1': f1,
-                'precision': prec,
-                'recall': rec,
-                'fpr': fpr
-            }
+            best_metrics = {'f1': f1_t, 'precision': prec_t, 'recall': rec_t, 'fpr': fpr_t}
     
     print(f"\n最优阈值: {best_threshold:.2f}")
     
-    # 保存配置
+    # 保存模型
+    model_path = os.path.join(output_dir, 'model.pkl')
+    scaler_path = os.path.join(output_dir, 'scaler.pkl')
+    config_path = os.path.join(output_dir, 'config.json')
+    
+    with open(model_path, 'wb') as f:
+        pickle.dump(model, f)
+    with open(scaler_path, 'wb') as f:
+        pickle.dump(scaler, f)
+    
     config = {
+        'feature_names': FEATURE_NAMES,
         'optimal_threshold': float(best_threshold),
         'metrics': best_metrics
     }
-    
-    with open(os.path.join(output_dir, 'config.json'), 'w') as f:
+    with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
     
-    return best_threshold, best_metrics
+    print(f"\n模型已保存: {model_path}")
+    print(f"标准化器: {scaler_path}")
+    print(f"配置文件: {config_path}")
+    
+    return model, scaler, best_threshold
 
 
 def main():
@@ -309,28 +260,22 @@ def main():
     
     print("=" * 60)
     print("图像篡改检测模型训练")
-    print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"数据目录: {args.data_dir}")
+    print(f"输出目录: {args.output_dir}")
     print("=" * 60)
     
     # 步骤1: 构建特征矩阵
-    X, y = build_feature_matrix(args.data_dir, args.output_dir, TOP_FEATURES)
+    X, y = build_feature_matrix(args.data_dir, args.output_dir)
     
-    # 步骤2: 训练模型
-    model, scaler, metrics = train_model(X, y, args.output_dir)
+    if X is None:
+        return
     
-    # 步骤3: 阈值优化 (需要重新划分数据)
-    X_scaled = scaler.transform(X)
-    _, X_test, _, y_test = train_test_split(
-        X_scaled, y, test_size=0.2, random_state=42, stratify=y
-    )
-    threshold, threshold_metrics = optimize_threshold(model, X_test, y_test, args.output_dir)
+    # 步骤2+3: 训练模型并优化阈值
+    train_model(X, y, args.output_dir)
     
     print("\n" + "=" * 60)
     print("训练完成!")
     print("=" * 60)
-    print(f"模型文件: {args.output_dir}/model.pkl")
-    print(f"标准化器: {args.output_dir}/scaler.pkl")
-    print(f"配置文件: {args.output_dir}/config.json")
 
 
 if __name__ == '__main__':
