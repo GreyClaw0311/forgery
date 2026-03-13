@@ -1,93 +1,62 @@
-# 图像篡改检测系统
+# Forgery Detection System
 
-基于传统OpenCV方法实现的图像篡改检测算法，通过机器学习融合多个手工特征实现高精度篡改检测。
+基于传统图像处理方法和机器学习的图像篡改检测系统。
 
-## 项目概述
+## 项目简介
 
-### 目标
-检测图像是否经过篡改（如拼接、复制粘贴、修饰等操作）
+本系统通过提取图像特征（JPEG块效应、频域分析、颜色一致性等），结合Gradient Boosting机器学习模型，实现图像篡改检测。主要检测类型包括：
 
-### 方法
-- 提取10个关键图像特征
-- 使用Gradient Boosting分类器进行融合判断
-- 优化阈值降低误报率
+- **拼接篡改** (Splicing): 将其他图像的部分拼接到目标图像
+- **复制粘贴** (Copy-Move): 图像内部区域的复制移动
+- **修饰篡改** (Retouching): 通过修复工具等进行的修饰
 
-### 效果
+### 核心指标
+
 | 指标 | 值 |
 |------|------|
-| CV F1-score | **0.9742** |
-| 测试集 F1 | **0.9302** |
+| F1-score | **0.9302** |
 | Precision | **97.87%** |
 | Recall | 88.62% |
 | 误报率(FPR) | 36.84% |
-| 漏报率(FNR) | 11.38% |
-
----
 
 ## 目录结构
 
 ```
 forgery/
-├── src/
-│   ├── features/              # 特征提取模块
-│   │   ├── feature_ela.py     # 错误级别分析
-│   │   ├── feature_dct.py     # DCT域分析
-│   │   ├── feature_cfa.py     # CFA插值检测
-│   │   ├── feature_noise.py   # 噪声一致性
-│   │   ├── feature_edge.py    # 边缘一致性
-│   │   ├── feature_lbp.py     # 局部二值模式
-│   │   ├── feature_histogram.py
-│   │   ├── feature_sift.py
-│   │   ├── feature_fft.py     # 傅里叶频域
-│   │   ├── feature_metadata.py
-│   │   ├── feature_hog.py     # 方向梯度直方图
-│   │   ├── feature_color.py   # 颜色一致性
-│   │   ├── feature_wavelet.py # 小波分析
-│   │   └── ... (共24个特征)
-│   ├── forgery_pipeline.py    # 完整预测Pipeline
-│   ├── pipeline.py            # Pipeline框架
-│   └── config.py              # 配置文件
-├── scripts/
-│   ├── process_full_data.py   # 数据处理脚本
-│   ├── step1_build_matrix_optimized.py  # 特征提取
-│   ├── step2_train_xgboost.py # 模型训练
-│   └── step3_optimize_model.py # 模型优化
-├── reports/
-│   ├── feature_experiment_report.md  # 特征实验报告
-│   ├── feature_fusion_research.md    # 融合方法调研
-│   ├── variant_experiment_report.md  # 变体特征报告
-│   └── gb_model_training_report.md   # 模型训练报告
-├── results/
-│   ├── full/
-│   │   ├── feature_matrix.csv   # 特征矩阵
-│   │   ├── optimized_model.pkl  # 训练好的模型
-│   │   ├── optimized_scaler.pkl # 标准化器
-│   │   └── pipeline_info.json   # Pipeline信息
-│   └── *.json                   # 各阶段结果
-├── tamper_data_full/            # 全量数据集
-│   └── processed/
-│       ├── easy/images/         # 简单篡改图片
-│       ├── difficult/images/    # 复杂篡改图片
-│       └── good/                # 正常图片
-└── README.md
+├── train/                 # 训练相关代码
+│   └── train.py          # 训练入口脚本
+├── release/              # 发布相关代码
+│   ├── pipeline.py       # 检测Pipeline
+│   └── models/           # 模型文件
+│       ├── model.pkl     # 训练好的模型
+│       ├── scaler.pkl    # 标准化器
+│       └── config.json   # 配置文件
+├── data/                 # 测试数据
+│   ├── easy/             # 简单篡改样本
+│   ├── difficult/        # 复杂篡改样本
+│   └── good/             # 正常样本
+├── src/                  # 源代码
+│   ├── features/         # 特征提取模块 (24个特征)
+│   └── config.py         # 配置文件
+├── reports/              # 实验报告
+│   └── final_report.md   # 全流程报告
+├── requirements.txt      # Python依赖
+├── Dockerfile           # Docker配置
+└── README.md            # 项目说明
 ```
-
----
 
 ## 快速开始
 
 ### 环境要求
 
-- Python 3.12
-- OpenCV 4.13.0
-- scikit-learn
-- numpy
-- pandas
+- Python 3.9+
+- OpenCV 4.8+
+- scikit-learn 1.3+
 
 ### 安装依赖
 
 ```bash
-pip install opencv-python scikit-learn numpy pandas
+pip install -r requirements.txt
 ```
 
 ### 使用方法
@@ -95,17 +64,16 @@ pip install opencv-python scikit-learn numpy pandas
 #### 1. 预测单张图片
 
 ```python
-from forgery_pipeline import ForgeryDetectionPipeline
+from release.pipeline import ForgeryDetector
 
-# 初始化Pipeline
-pipeline = ForgeryDetectionPipeline()
+# 初始化检测器
+detector = ForgeryDetector()
 
 # 预测图片
-result = pipeline.predict('path/to/image.jpg')
+result = detector.predict('test_image.jpg')
 
 print(f"是否篡改: {result['is_tampered']}")
 print(f"置信度: {result['confidence']:.4f}")
-print(f"篡改概率: {result['probability']:.4f}")
 ```
 
 #### 2. 批量预测
@@ -113,19 +81,53 @@ print(f"篡改概率: {result['probability']:.4f}")
 ```python
 # 批量预测多张图片
 image_paths = ['img1.jpg', 'img2.jpg', 'img3.jpg']
-results = pipeline.predict_batch(image_paths)
+results = detector.predict_batch(image_paths)
 
 for r in results:
     print(f"{r['image_path']}: {'篡改' if r['is_tampered'] else '正常'}")
 ```
 
----
+#### 3. 命令行使用
+
+```bash
+python -m release.pipeline image.jpg
+```
+
+### Docker 部署
+
+```bash
+# 构建镜像
+docker build -t forgery-detector:1.0 .
+
+# 运行检测
+docker run --rm -v /path/to/images:/images forgery-detector:1.0 \
+    python -m release.pipeline /images/test.jpg
+```
+
+## 训练模型
+
+### 准备数据
+
+将数据放置在 `data/` 目录下：
+
+```
+data/
+├── easy/images/      # 简单篡改图片
+├── difficult/images/ # 复杂篡改图片
+└── good/             # 正常图片
+```
+
+### 执行训练
+
+```bash
+python train/train.py --data_dir ./data --output_dir ./release/models
+```
 
 ## 特征说明
 
-项目使用Top 10关键特征：
+系统使用 **Top 10** 关键特征进行检测：
 
-| 特征 | 说明 | 重要性 |
+| 特征 | 描述 | 重要性 |
 |------|------|--------|
 | fft | 傅里叶频域分析 | 14.23% |
 | resampling | 重采样检测 | 12.09% |
@@ -138,79 +140,41 @@ for r in results:
 | jpeg_ghost | JPEG伪影检测 | 7.62% |
 | saturation | 饱和度一致性 | 7.20% |
 
----
+## 模型说明
 
-## 模型性能
+- **模型类型**: `sklearn.ensemble.GradientBoostingClassifier`
+- **参数**: max_depth=5, learning_rate=0.1, n_estimators=200
+- **最优阈值**: 0.85
 
-### 训练数据
+## 性能详情
 
-| 类别 | 数量 |
-|------|------|
-| Easy (简单篡改) | 2,648 |
-| Difficult (复杂篡改) | 2,800 |
-| Good (正常) | 283 |
-| **总计** | **5,731** |
+### 测试集分布
 
-### 混淆矩阵
+| 类别 | 数量 | 说明 |
+|------|------|------|
+| Easy | ~529 | 简单篡改 |
+| Difficult | ~561 | 复杂篡改 |
+| Good | 57 | 正常图片 |
+| **总计** | **1147** | 测试集20% |
 
-```
-              预测正常  预测篡改
-  实际正常        26        31
-  实际篡改        39      1051
-```
+### 误报分析
 
----
-
-## 项目运行
-
-### 1. 数据处理
-
-```bash
-python scripts/process_full_data.py
-```
-
-### 2. 特征提取
-
-```bash
-python scripts/step1_build_matrix_optimized.py
-```
-
-### 3. 模型训练
-
-```bash
-python scripts/step2_train_xgboost.py
-```
-
-### 4. 模型优化
-
-```bash
-python scripts/step3_optimize_model.py
-```
-
----
-
-## 技术亮点
-
-1. **特征工程**: 实现了24个图像篡改检测特征
-2. **特征选择**: 基于重要性选择Top 10特征
-3. **数据不平衡处理**: 类别权重调整
-4. **阈值优化**: 最优阈值0.85
-5. **Pipeline封装**: 一键预测接口
-
----
+误报率 **36.84%** 100% 来自 Good 类别（正常图片被误判为篡改）。
 
 ## 注意事项
 
-- 当前数据集中正常样本仅占4.9%，导致误报率较高
-- 阈值可根据实际需求调整（降低阈值→降低误报率，但会增加漏报率）
-- 建议收集更多正常样本以改善模型性能
+1. **数据不平衡**: 正常样本仅占4.9%，建议收集更多正常样本
+2. **阈值调整**: 可根据业务需求调整阈值（阈值↑ → 误报率↓，漏报率↑）
+3. **格式支持**: 支持 JPG、PNG、BMP 格式
 
----
+## License
+
+MIT License
 
 ## 作者
 
 灰 - 上坤商业帝国首席CTO
 
-## License
+---
 
-MIT
+**GitHub**: https://github.com/GreyClaw0311/forgery
