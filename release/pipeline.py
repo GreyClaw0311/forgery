@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 图像篡改检测 Pipeline - 发布版本
-用于生产环境的图像篡改检测
 
 使用方法:
     from release.pipeline import ForgeryDetector
@@ -17,15 +16,11 @@ import sys
 import pickle
 import numpy as np
 
-# 获取项目根目录
+# 项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
 
-# Top 10 特征
-FEATURE_NAMES = ['jpeg_block', 'contrast', 'saturation', 'jpeg_ghost', 'fft', 
-                 'cfa', 'edge', 'color', 'resampling', 'splicing']
-
-# 最优阈值
-OPTIMAL_THRESHOLD = 0.85
+from train.features import FEATURE_NAMES, extract_all_features
 
 
 class ForgeryDetector:
@@ -52,11 +47,11 @@ class ForgeryDetector:
         Args:
             model_path: 模型文件路径 (默认使用内置模型)
             scaler_path: 标准化器文件路径 (默认使用内置标准化器)
-            threshold: 分类阈值 (默认0.85)
+            threshold: 分类阈值 (默认从配置读取，或0.85)
         """
         self.model = None
         self.scaler = None
-        self.threshold = threshold or OPTIMAL_THRESHOLD
+        self.threshold = threshold
         self.feature_names = FEATURE_NAMES
         
         # 默认路径
@@ -78,27 +73,17 @@ class ForgeryDetector:
                 self.scaler = pickle.load(f)
         else:
             raise FileNotFoundError(f"标准化器文件不存在: {scaler_path}")
-    
-    def _extract_features(self, image_path):
-        """提取图片特征"""
-        import cv2
         
-        features = []
-        
-        for fname in self.feature_names:
-            try:
-                module = __import__(f'src.features.feature_{fname}', fromlist=[''])
-                detect_func = getattr(module, f'detect_tampering_{fname}', None)
-                if detect_func:
-                    _, score = detect_func(image_path)
-                    features.append(float(score))
-                else:
-                    features.append(0.0)
-            except Exception as e:
-                print(f"警告: {fname} 提取失败: {e}")
-                features.append(0.0)
-        
-        return np.array(features)
+        # 加载配置
+        if self.threshold is None:
+            config_path = os.path.join(PROJECT_ROOT, 'release', 'models', 'config.json')
+            if os.path.exists(config_path):
+                import json
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    self.threshold = config.get('optimal_threshold', 0.85)
+            else:
+                self.threshold = 0.85
     
     def predict(self, image_path):
         """
@@ -115,7 +100,7 @@ class ForgeryDetector:
             }
         """
         # 提取特征
-        features = self._extract_features(image_path)
+        features = extract_all_features(image_path)
         
         # 标准化
         features_scaled = self.scaler.transform([features])
@@ -166,7 +151,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='图像篡改检测')
     parser.add_argument('image', type=str, help='图片路径')
-    parser.add_argument('--threshold', type=float, default=0.85, help='分类阈值')
+    parser.add_argument('--threshold', type=float, default=None, help='分类阈值')
     args = parser.parse_args()
     
     detector = ForgeryDetector(threshold=args.threshold)
