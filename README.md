@@ -18,17 +18,28 @@
 
 ```
 forgery/
-├── train/                 # 训练相关代码
-│   ├── features.py       # 特征提取模块
-│   └── train.py          # 训练脚本
-├── release/              # 发布相关代码
-│   ├── pipeline.py       # 检测Pipeline
-│   └── models/           # 模型文件
-├── data/                 # 测试数据
-├── final_report.md       # 全流程实验报告
-├── requirements.txt      # Python依赖
-├── Dockerfile           # Docker配置
-└── README.md            # 项目说明
+├── train/                     # 训练相关代码
+│   ├── __init__.py
+│   ├── features.py           # 特征提取模块 (Top 10特征)
+│   └── train.py              # 训练脚本
+├── release/                   # 发布相关代码
+│   ├── __init__.py
+│   ├── pipeline.py           # 检测Pipeline
+│   └── models/               # 模型文件目录
+├── data/                      # 测试数据
+│   ├── README.md             # 数据说明
+│   └── tamper_data/          # 测试样本
+│       ├── easy/             # 简单篡改 (20张)
+│       │   ├── images/
+│       │   └── masks/
+│       ├── difficult/        # 复杂篡改 (17张)
+│       │   ├── images/
+│       │   └── masks/
+│       └── good/             # 正常图片 (10张)
+├── final_report.md            # 全流程实验报告
+├── requirements.txt           # Python依赖
+├── Dockerfile                # Docker配置
+└── README.md                 # 项目说明
 ```
 
 ## 快速开始
