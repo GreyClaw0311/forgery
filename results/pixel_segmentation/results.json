@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-03-14T17:38:03.250309",
+  "model_type": "RandomForest",
+  "dataset_size": 30752,
+  "tampered_pixels": 8426,
+  "normal_pixels": 22326,
+  "train_accuracy": 0.9657331002804764,
+  "val_accuracy": 0.944887010242237,
+  "best_threshold": 0.5,
+  "pixel_level_f1": 0.8978608014462187,
+  "feature_importance": {
+    "Noise_p95": 0.07304901975042043,
+    "Edge_mag_max": 0.061339797308560616,
+    "Edge_mag_std": 0.05892799583585402,
+    "Edge_mag_mean": 0.0545978174003675,
+    "Edge_density": 0.05319557851858243,
+    "HSV_H_std": 0.050459991339495275,
+    "DCT_mean": 0.04948252311758272,
+    "Noise_std": 0.0382483863202766,
+    "ELA_mean": 0.03796013063634572,
+    "Noise_mean": 0.036565104418357045
+  }
+}
