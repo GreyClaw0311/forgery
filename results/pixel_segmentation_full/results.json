@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-03-14T22:48:46.252538",
+  "total_images": 3448,
+  "dataset_size": 279999,
+  "window": 64,
+  "stride": 32,
+  "val_accuracy": 0.8859107142857143,
+  "best_threshold": 0.5,
+  "pixel_f1": 0.7742163480227585
+}
