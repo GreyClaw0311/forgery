@@ -184,7 +184,11 @@ class DatasetBuilder:
         if mask.shape[:2] != (h, w):
             mask = cv2.resize(mask, (w, h))
         
+        # 二值化mask (0=正常, 1=篡改)
         labels = (mask > 127).astype(np.uint8)
+        
+        # 检查是否为正常图片（全黑mask）
+        is_normal_image = np.sum(labels) == 0
         
         # 滑动窗口提取特征
         half = self.config.WINDOW_SIZE // 2
@@ -212,10 +216,24 @@ class DatasetBuilder:
         tampered_idx = np.where(labels == 1)[0]
         normal_idx = np.where(labels == 0)[0]
         
-        if len(tampered_idx) == 0 or len(normal_idx) == 0:
-            return None, None
+        # 处理正常图片（全黑mask，无篡改像素）
+        if len(tampered_idx) == 0:
+            # 正常图片：只采样正常像素
+            if len(normal_idx) == 0:
+                return None, None
+            # 限制采样数量
+            n_samples = min(len(normal_idx), self.config.MAX_SAMPLES_PER_IMAGE)
+            selected_idx = np.random.choice(normal_idx, n_samples, replace=False)
+            return features[selected_idx], labels[selected_idx]
         
-        # 保持篡改:正常 = 1:BALANCE_RATIO
+        # 处理篡改图片
+        if len(normal_idx) == 0:
+            # 只有篡改像素的情况（极少见）
+            n_samples = min(len(tampered_idx), self.config.MAX_SAMPLES_PER_IMAGE)
+            selected_idx = np.random.choice(tampered_idx, n_samples, replace=False)
+            return features[selected_idx], labels[selected_idx]
+        
+        # 正常情况：保持篡改:正常 = 1:BALANCE_RATIO
         n_tampered = len(tampered_idx)
         n_normal = min(n_tampered * self.config.BALANCE_RATIO, len(normal_idx))
         
@@ -257,6 +275,10 @@ class DatasetBuilder:
         all_features = []
         all_labels = []
         
+        # 统计
+        normal_images = 0
+        tampered_images = 0
+        
         image_files = list(images_dir.glob('*.jpg'))
         print(f"处理 {split} 集: {len(image_files)} 张图片")
         
@@ -266,6 +288,15 @@ class DatasetBuilder:
             
             if not mask_file.exists():
                 continue
+            
+            # 检查是否为正常图片
+            mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+            is_normal = mask is not None and np.sum(mask > 127) == 0
+            
+            if is_normal:
+                normal_images += 1
+            else:
+                tampered_images += 1
             
             features, labels = self.process_image(str(img_file), str(mask_file))
             if features is not None and len(features) > 0:
@@ -278,9 +309,12 @@ class DatasetBuilder:
         X = np.vstack(all_features)
         y = np.concatenate(all_labels)
         
-        print(f"  样本数: {len(X)}")
-        print(f"  篡改: {np.sum(y==1)} ({np.mean(y==1)*100:.1f}%)")
-        print(f"  正常: {np.sum(y==0)} ({np.mean(y==0)*100:.1f}%)")
+        print(f"\n  数据集统计:")
+        print(f"    正常图片: {normal_images} 张")
+        print(f"    篡改图片: {tampered_images} 张")
+        print(f"    总样本数: {len(X)}")
+        print(f"    篡改像素: {np.sum(y==1)} ({np.mean(y==1)*100:.1f}%)")
+        print(f"    正常像素: {np.sum(y==0)} ({np.mean(y==0)*100:.1f}%)")
         
         return X, y
 

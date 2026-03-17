@@ -5,8 +5,9 @@
 功能：
 1. 从原始数据目录整理数据
 2. 统一文件命名和格式
-3. 划分训练/验证/测试集
-4. 生成数据统计报告
+3. 为good数据集（正常图片）生成全黑mask
+4. 划分训练/验证/测试集
+5. 生成数据统计报告
 """
 
 import os
@@ -16,7 +17,7 @@ import json
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import cv2
 import numpy as np
@@ -59,15 +60,18 @@ class DataProcessor:
             'total_images': 0,
             'total_masks': 0,
             'categories': {},
-            'splits': {'train': 0, 'val': 0, 'test': 0}
+            'splits': {'train': 0, 'val': 0, 'test': 0},
+            'good_images': 0,  # 正常图片数量
+            'tampered_images': 0  # 篡改图片数量
         }
     
-    def scan_source_data(self) -> Dict[str, List[Tuple[str, str]]]:
+    def scan_source_data(self) -> Dict[str, List[Tuple[str, Optional[str]]]]:
         """
         扫描源数据目录，收集所有图片和对应mask
         
         Returns:
-            {category: [(image_path, mask_path), ...]}
+            {category: [(image_path, mask_path or None), ...]}
+            mask_path为None表示需要生成全黑mask（good数据）
         """
         data = {}
         
@@ -76,7 +80,7 @@ class DataProcessor:
             if not category_dir.is_dir():
                 continue
             
-            category_name = category_dir.name
+            category_name = category_dir.name.lower()
             images_dir = category_dir / 'images'
             masks_dir = category_dir / 'masks'
             
@@ -84,29 +88,41 @@ class DataProcessor:
                 continue
             
             pairs = []
+            is_good_category = category_name == 'good'
+            
             for img_file in images_dir.glob('*.jpg'):
-                # 查找对应的mask
-                mask_file = masks_dir / (img_file.stem + '.png')
-                if mask_file.exists():
-                    pairs.append((str(img_file), str(mask_file)))
-                elif masks_dir.exists():
-                    # 尝试其他扩展名
-                    for ext in ['.png', '.jpg', '.jpeg']:
-                        alt_mask = masks_dir / (img_file.stem + ext)
-                        if alt_mask.exists():
-                            pairs.append((str(img_file), str(alt_mask)))
-                            break
+                if is_good_category:
+                    # Good数据：无mask，标记为None（后续生成全黑mask）
+                    pairs.append((str(img_file), None))
+                else:
+                    # 篡改数据：查找对应的mask
+                    mask_file = masks_dir / (img_file.stem + '.png')
+                    if mask_file.exists():
+                        pairs.append((str(img_file), str(mask_file)))
+                    elif masks_dir.exists():
+                        # 尝试其他扩展名
+                        for ext in ['.png', '.jpg', '.jpeg']:
+                            alt_mask = masks_dir / (img_file.stem + ext)
+                            if alt_mask.exists():
+                                pairs.append((str(img_file), str(alt_mask)))
+                                break
             
             if pairs:
-                data[category_name] = pairs
-                self.stats['categories'][category_name] = len(pairs)
-                print(f"  {category_name}: {len(pairs)} 对")
+                data[category_dir.name] = pairs
+                self.stats['categories'][category_dir.name] = len(pairs)
+                
+                if is_good_category:
+                    self.stats['good_images'] = len(pairs)
+                    print(f"  {category_dir.name}: {len(pairs)} 张 (正常图片，将生成全黑mask)")
+                else:
+                    self.stats['tampered_images'] += len(pairs)
+                    print(f"  {category_dir.name}: {len(pairs)} 张 (篡改图片)")
         
         return data
     
-    def split_data(self, data: Dict[str, List[Tuple[str, str]]]) -> Dict[str, List[Tuple[str, str]]]:
+    def split_data(self, data: Dict[str, List[Tuple[str, Optional[str]]]]) -> Dict[str, List[Tuple[str, Optional[str]]]]:
         """
-        划分数据集
+        划分数据集，确保每个类别按比例划分
         
         Args:
             data: 原始数据
@@ -114,28 +130,28 @@ class DataProcessor:
         Returns:
             {split: [(image_path, mask_path), ...]}
         """
-        all_pairs = []
-        for pairs in data.values():
-            all_pairs.extend(pairs)
+        splits = {'train': [], 'val': [], 'test': []}
         
-        random.shuffle(all_pairs)
+        # 按类别分别划分，保证各类别比例均衡
+        for category, pairs in data.items():
+            random.shuffle(pairs)
+            
+            n_total = len(pairs)
+            n_train = int(n_total * self.train_ratio)
+            n_val = int(n_total * self.val_ratio)
+            
+            splits['train'].extend(pairs[:n_train])
+            splits['val'].extend(pairs[n_train:n_train + n_val])
+            splits['test'].extend(pairs[n_train + n_val:])
         
-        n_total = len(all_pairs)
-        n_train = int(n_total * self.train_ratio)
-        n_val = int(n_total * self.val_ratio)
-        
-        splits = {
-            'train': all_pairs[:n_train],
-            'val': all_pairs[n_train:n_train + n_val],
-            'test': all_pairs[n_train + n_val:]
-        }
-        
-        for split_name, pairs in splits.items():
-            self.stats['splits'][split_name] = len(pairs)
+        # 打乱每个split
+        for split_name in splits:
+            random.shuffle(splits[split_name])
+            self.stats['splits'][split_name] = len(splits[split_name])
         
         return splits
     
-    def copy_and_rename(self, splits: Dict[str, List[Tuple[str, str]]]):
+    def copy_and_rename(self, splits: Dict[str, List[Tuple[str, Optional[str]]]]):
         """
         复制并重命名文件到输出目录
         
@@ -149,22 +165,48 @@ class DataProcessor:
             images_dir.mkdir(parents=True, exist_ok=True)
             masks_dir.mkdir(parents=True, exist_ok=True)
             
+            good_count = 0
+            tampered_count = 0
+            
             for idx, (img_path, mask_path) in enumerate(tqdm(pairs, desc=f"处理{split_name}")):
                 # 新文件名: split_000001.jpg
                 new_name = f"{split_name}_{idx:06d}"
                 
+                # 读取图片获取尺寸
+                img = cv2.imread(img_path)
+                if img is None:
+                    continue
+                
+                h, w = img.shape[:2]
+                
                 # 复制图片
                 shutil.copy(img_path, images_dir / (new_name + '.jpg'))
                 
-                # 复制并确保mask为PNG
-                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                if mask is not None:
-                    # 二值化
-                    mask = (mask > 127).astype(np.uint8) * 255
-                    cv2.imwrite(str(masks_dir / (new_name + '.png')), mask)
-                    self.stats['total_masks'] += 1
+                # 处理mask
+                if mask_path is None:
+                    # Good数据：生成全黑mask（表示无篡改）
+                    mask = np.zeros((h, w), dtype=np.uint8)
+                    good_count += 1
+                else:
+                    # 篡改数据：读取并二值化mask
+                    mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                    if mask is None:
+                        # 如果读取失败，生成全黑mask
+                        mask = np.zeros((h, w), dtype=np.uint8)
+                    else:
+                        # 调整尺寸匹配图片
+                        if mask.shape[:2] != (h, w):
+                            mask = cv2.resize(mask, (w, h))
+                        # 二值化
+                        mask = (mask > 127).astype(np.uint8) * 255
+                    tampered_count += 1
                 
+                # 保存mask
+                cv2.imwrite(str(masks_dir / (new_name + '.png')), mask)
+                self.stats['total_masks'] += 1
                 self.stats['total_images'] += 1
+            
+            print(f"  {split_name}: {good_count} 正常 + {tampered_count} 篡改 = {good_count + tampered_count} 张")
     
     def process(self):
         """执行完整处理流程"""
@@ -191,7 +233,7 @@ class DataProcessor:
             print(f"  {split_name}: {len(pairs)} 张")
         
         # 3. 复制文件
-        print("\n[3/3] 复制文件...")
+        print("\n[3/3] 复制文件并生成mask...")
         self.copy_and_rename(splits)
         
         # 4. 保存统计信息
@@ -206,6 +248,8 @@ class DataProcessor:
         print("=" * 60)
         print(f"总图片数: {self.stats['total_images']}")
         print(f"总Mask数: {self.stats['total_masks']}")
+        print(f"正常图片: {self.stats['good_images']}")
+        print(f"篡改图片: {self.stats['tampered_images']}")
         print(f"\n数据集统计:")
         for split, count in self.stats['splits'].items():
             print(f"  {split}: {count}")
@@ -220,8 +264,8 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='图像篡改数据处理')
-    parser.add_argument('--source', type=str, default='/data/my_data',
-                        help='源数据目录')
+    parser.add_argument('--source', type=str, default='/data/tamper_data_full',
+                        help='源数据目录 (包含easy/difficult/good子目录)')
     parser.add_argument('--output', type=str, default='/data/tamper_data_processed',
                         help='输出目录')
     parser.add_argument('--train-ratio', type=float, default=0.7,
