@@ -57,7 +57,9 @@ async def root():
         "status": "running",
         "algorithms": [
             "ela",
-            "dct", 
+            "dct",
+            "dct_feature",
+            "hog",
             "noise",
             "copy_move",
             "fusion",
@@ -83,6 +85,18 @@ async def list_algorithms():
                 "description": "DCT Block Detection - DCT块效应检测",
                 "suitable": ["JPEG压缩不一致", "块边界篡改"],
                 "speed": "fast"
+            },
+            {
+                "name": "dct_feature",
+                "description": "DCT Feature Detection - DCT特征像素级检测",
+                "suitable": ["像素级定位", "DCT系数异常"],
+                "speed": "medium"
+            },
+            {
+                "name": "hog",
+                "description": "HOG Feature Detection - HOG特征像素级检测",
+                "suitable": ["边缘异常", "纹理不一致"],
+                "speed": "medium"
             },
             {
                 "name": "noise",
@@ -136,7 +150,7 @@ async def detect_forgery(
     - **mask_image**: 检测结果图片 (Base64编码)
     """
     # 验证算法名称
-    valid_algorithms = ["ela", "dct", "noise", "copy_move", "fusion", "pixel_ml", "pipeline"]
+    valid_algorithms = ["ela", "dct", "dct_feature", "hog", "noise", "copy_move", "fusion", "pixel_ml", "pipeline"]
     if algorithm not in valid_algorithms:
         raise HTTPException(
             status_code=400, 
@@ -183,7 +197,7 @@ async def detect_forgery_base64(request: DetectionRequest):
     返回检测结果
     """
     # 验证算法
-    valid_algorithms = ["ela", "dct", "noise", "copy_move", "fusion", "pixel_ml", "pipeline"]
+    valid_algorithms = ["ela", "dct", "dct_feature", "hog", "noise", "copy_move", "fusion", "pixel_ml", "pipeline"]
     if request.algorithm not in valid_algorithms:
         raise HTTPException(
             status_code=400,

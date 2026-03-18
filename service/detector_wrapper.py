@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.detection.ela_detector import ELADetector
 from src.detection.dct_detector import DCTBlockDetector
+from src.detection.dct_feature_detector import DCTFeatureDetector, DCTBlockFeatureDetector
+from src.detection.hog_feature_detector import HOGFeatureDetector, HOGAnomalyDetector
 from src.detection.noise_detector import NoiseConsistencyDetector
 from src.detection.copy_move_detector import CopyMoveDetector
 from src.detection.fusion import AdaptiveFusion
@@ -47,6 +49,10 @@ class ForgeryDetectorWrapper:
         # 初始化各检测器
         self.ela_detector = ELADetector()
         self.dct_detector = DCTBlockDetector()
+        self.dct_feature_detector = DCTFeatureDetector()
+        self.dct_block_detector = DCTBlockFeatureDetector()
+        self.hog_detector = HOGFeatureDetector()
+        self.hog_anomaly_detector = HOGAnomalyDetector()
         self.noise_detector = NoiseConsistencyDetector(block_size=32)
         self.copy_move_detector = CopyMoveDetector()
         self.fusion = AdaptiveFusion()
@@ -106,6 +112,10 @@ class ForgeryDetectorWrapper:
             return self._detect_ela(image)
         elif algorithm == "dct":
             return self._detect_dct(image)
+        elif algorithm == "dct_feature":
+            return self._detect_dct_feature(image)
+        elif algorithm == "hog":
+            return self._detect_hog(image)
         elif algorithm == "noise":
             return self._detect_noise(image)
         elif algorithm == "copy_move":
@@ -146,6 +156,40 @@ class ForgeryDetectorWrapper:
         
         tampered_ratio = np.mean(mask > 0)
         confidence = float(np.max(heatmap))
+        is_tampered = tampered_ratio > 0.01
+        
+        result_image = self._generate_result_image(image, mask, heatmap)
+        
+        return {
+            "is_tampered": is_tampered,
+            "confidence": confidence,
+            "mask_base64": self._image_to_base64(result_image),
+            "tampered_ratio": float(tampered_ratio)
+        }
+    
+    def _detect_dct_feature(self, image: np.ndarray) -> Dict[str, Any]:
+        """DCT 特征检测（像素级）"""
+        heatmap, mask = self.dct_feature_detector.detect(image)
+        
+        tampered_ratio = np.mean(mask > 0)
+        confidence = float(np.max(heatmap)) if heatmap.max() > 0 else 0.0
+        is_tampered = tampered_ratio > 0.01
+        
+        result_image = self._generate_result_image(image, mask, heatmap)
+        
+        return {
+            "is_tampered": is_tampered,
+            "confidence": confidence,
+            "mask_base64": self._image_to_base64(result_image),
+            "tampered_ratio": float(tampered_ratio)
+        }
+    
+    def _detect_hog(self, image: np.ndarray) -> Dict[str, Any]:
+        """HOG 特征检测（像素级）"""
+        heatmap, mask = self.hog_detector.detect(image)
+        
+        tampered_ratio = np.mean(mask > 0)
+        confidence = float(np.max(heatmap)) if heatmap.max() > 0 else 0.0
         is_tampered = tampered_ratio > 0.01
         
         result_image = self._generate_result_image(image, mask, heatmap)
