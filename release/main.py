@@ -9,6 +9,7 @@ FastAPI 服务，提供 REST API 接口
 - algorithm: 算法名称 (ela/dct/fusion/ml)
 
 出参:
+- status: 状态码
 - is_tampered: 是否篡改
 - confidence: 置信度
 - mask_base64: 篡改区域掩码 Base64
@@ -27,8 +28,9 @@ from typing import Optional, List, Dict
 import cv2
 import numpy as np
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
 # 项目根目录
@@ -40,6 +42,15 @@ from algorithms.ela_detector import ELADetector
 from algorithms.dct_detector import DCTBlockDetector
 from algorithms.fusion_detector import AdaptiveFusion
 from algorithms.ml_detector import MLDetectorGPU
+
+# 状态码定义
+STATUS_CODES = {
+    "0000": "未知异常.",
+    "0001": "解析成功.",
+    "0002": "base64解码异常.",
+    "0004": "参数格式错误.",
+    "0007": "请求参数内容错误或为空."
+}
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -89,6 +100,7 @@ class TamperRegion(BaseModel):
 
 class DetectionResponse(BaseModel):
     """检测响应"""
+    status: str                          # 状态码
     is_tampered: bool                    # 是否篡改
     confidence: float                    # 置信度 (0-1)
     mask_base64: Optional[str]           # 篡改区域掩码 Base64
@@ -105,12 +117,43 @@ class HealthResponse(BaseModel):
     algorithms: list
 
 
+class ErrorResponse(BaseModel):
+    """错误响应"""
+    status: str
+    message: str
+
+
+# 全局异常处理
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理 - 返回0000状态码"""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "0000:未知异常.",
+            "message": str(exc)
+        }
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """参数验证异常 - 返回0004状态码"""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "status": "0004:参数格式错误.",
+            "message": str(exc)
+        }
+    )
+
+
 # API 端点
 @app.get("/", response_model=HealthResponse)
 async def root():
     """根路径 - 健康检查"""
     return {
-        "status": "ok",
+        "status": "0001:服务运行正常.",
         "timestamp": datetime.now().isoformat(),
         "algorithms": ["ela", "dct", "fusion", "ml"]
     }
@@ -120,15 +163,15 @@ async def root():
 async def health():
     """健康检查"""
     return {
-        "status": "ok",
+        "status": "0001:服务运行正常.",
         "timestamp": datetime.now().isoformat(),
         "algorithms": ["ela", "dct", "fusion", "ml"]
     }
 
 
-@app.post("/tamper_detection/v1/tamper_detect_img", response_model=DetectionResponse)
+@app.post("/tamper_detection/v1/tamper_detect_img")
 async def tamper_detect_img(
-    image_base64: str = Form(..., description="图片 Base64 编码"),
+    image_base64: str = Form(default="", description="图片 Base64 编码"),
     algorithm: str = Form(default="ml", description="算法名称: ela/dct/fusion/ml")
 ):
     """
@@ -145,17 +188,53 @@ async def tamper_detect_img(
     
     start_time = time.time()
     
+    # 检查参数是否为空
+    if not image_base64 or image_base64.strip() == "":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "0007:请求参数内容错误或为空.",
+                "message": "image_base64参数不能为空"
+            }
+        )
+    
+    # 检查算法参数
+    if algorithm not in ['ela', 'dct', 'fusion', 'ml']:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "0004:参数格式错误.",
+                "message": f"未知的算法: {algorithm}，可选值: ela/dct/fusion/ml"
+            }
+        )
+    
     try:
         # 解码 Base64
         if ',' in image_base64:
             image_base64 = image_base64.split(',')[1]
         
-        image_bytes = base64.b64decode(image_base64)
+        try:
+            image_bytes = base64.b64decode(image_base64)
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "0002:base64解码异常.",
+                    "message": "image_base64参数解码失败"
+                }
+            )
+        
         nparr = np.frombuffer(image_bytes, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
         if image is None:
-            raise HTTPException(status_code=400, detail="无法解析图片")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "0007:请求参数内容错误或为空.",
+                    "message": "无法解析图片，请确保是有效的图片格式"
+                }
+            )
         
         # 保存临时文件 (ML 检测器需要文件路径)
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -172,12 +251,11 @@ async def tamper_detect_img(
                 result = _detect_with_dct(image)
             elif algorithm == 'fusion':
                 result = _detect_with_fusion(image)
-            else:
-                raise HTTPException(status_code=400, detail=f"未知算法: {algorithm}")
             
             # 计算处理时间
             result['processing_time'] = time.time() - start_time
             result['algorithm'] = algorithm
+            result['status'] = "0001:解析成功."
             
             return result
         
@@ -186,7 +264,13 @@ async def tamper_detect_img(
                 os.unlink(tmp_path)
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "0000:未知异常.",
+                "message": str(e)
+            }
+        )
 
 
 def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
