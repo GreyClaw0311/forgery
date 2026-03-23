@@ -2,7 +2,7 @@
 
 ## 接口说明
 
-针对Base64编码的图像数据进行篡改检测，识别图像是否经过拼接、复制粘贴、修饰等篡改操作，并返回篡改区域的掩码图像及在原图上标记篡改区域的图片。
+针对Base64编码的图像数据进行篡改检测，识别图像是否经过拼接、复制粘贴、修饰等篡改操作，并返回篡改区域的掩码图像、标记图片及矩形坐标。
 
 ## 接口 URL
 
@@ -40,8 +40,8 @@ POST
 
 | 算法名称 | 说明 | 推荐场景 |
 |----------|------|----------|
-| **ml** | 机器学习串联检测 (Random Forest) | **推荐**，综合检测效果最佳 |
-| **fusion** | 多特征融合检测 | 需要快速初步筛查的场景 |
+| **ml** | 机器学习串联检测 (Random Forest) | **推荐**，综合检测效果最佳，能输出精确篡改区域 |
+| **fusion** | 多特征融合检测 (ELA + DCT) | 需要快速初步筛查的场景 |
 | **ela** | ELA (Error Level Analysis) 单特征检测 | JPEG重压缩检测 |
 | **dct** | DCT (离散余弦变换) 单特征检测 | JPEG块效应检测 |
 
@@ -59,6 +59,22 @@ POST
   "confidence": 0.89,
   "mask_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
   "marked_image_base64": "/9j/4AAQSkZJRgABAQAAAQABAAD...",
+  "tamper_regions": [
+    {
+      "x": 120,
+      "y": 85,
+      "width": 156,
+      "height": 142,
+      "area": 12580
+    },
+    {
+      "x": 320,
+      "y": 200,
+      "width": 80,
+      "height": 95,
+      "area": 4560
+    }
+  ],
   "algorithm": "ml",
   "processing_time": 2.35
 }
@@ -71,9 +87,20 @@ POST
 | is_tampered | boolean | true | 是否检测到篡改，`true`表示篡改，`false`表示正常 |
 | confidence | float | true | 置信度，取值范围0-1，值越高表示越确信 |
 | mask_base64 | string | false | 篡改区域掩码图像的Base64编码(PNG格式)，白色区域表示篡改位置；若无篡改或无法生成则为`null` |
-| marked_image_base64 | string | false | 在原图上标记篡改区域的图片Base64编码(JPEG格式)，篡改区域用红色轮廓和半透明红色填充标注；若无篡改则为`null` |
+| marked_image_base64 | string | false | 在原图上标记篡改区域的图片Base64编码(JPEG格式)，篡改区域用红色轮廓和半透明红色填充标注，绿色矩形框标出各篡改区域；若无篡改则为`null` |
+| tamper_regions | array | false | 篡改区域矩形坐标列表，每个元素包含矩形位置和面积信息；若无篡改则为`null` |
 | algorithm | string | true | 实际使用的算法名称 |
 | processing_time | float | true | 处理耗时(秒) |
+
+### tamper_regions 数组元素说明
+
+| 参数名称 | 参数类型 | 说明 |
+|----------|----------|------|
+| x | int | 矩形左上角 x 坐标 (像素) |
+| y | int | 矩形左上角 y 坐标 (像素) |
+| width | int | 矩形宽度 (像素) |
+| height | int | 矩形高度 (像素) |
+| area | int | 该篡改区域的面积 (像素数) |
 
 ---
 
@@ -156,6 +183,14 @@ result = response.json()
 
 print(f"是否篡改: {result['is_tampered']}")
 print(f"置信度: {result['confidence']}")
+
+# 输出篡改区域坐标
+if result['tamper_regions']:
+    print("篡改区域:")
+    for i, region in enumerate(result['tamper_regions'], 1):
+        print(f"  区域{i}: 位置({region['x']}, {region['y']}), "
+              f"大小{region['width']}x{region['height']}, "
+              f"面积{region['area']}像素")
 
 # 保存标记图片
 if result['marked_image_base64']:
