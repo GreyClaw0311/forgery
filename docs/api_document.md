@@ -61,16 +61,12 @@ POST
   "marked_image_base64": "/9j/4AAQSkZJRgABAQAAAQABAAD...",
   "tamper_regions": [
     {
-      "left": 120,
-      "top": 85,
-      "right": 276,
-      "bottom": 227
+      "left_top": [120, 85],
+      "right_bottom": [276, 227]
     },
     {
-      "left": 320,
-      "top": 200,
-      "right": 400,
-      "bottom": 295
+      "left_top": [320, 200],
+      "right_bottom": [400, 295]
     }
   ],
   "algorithm": "ml",
@@ -94,10 +90,8 @@ POST
 
 | 参数名称 | 参数类型 | 说明 |
 |----------|----------|------|
-| left | int | 矩形左边界 x 坐标 (像素) |
-| top | int | 矩形上边界 y 坐标 (像素) |
-| right | int | 矩形右边界 x 坐标 (像素) |
-| bottom | int | 矩形下边界 y 坐标 (像素) |
+| left_top | array[int] | 左上角坐标 [x, y]，x为横坐标，y为纵坐标 |
+| right_bottom | array[int] | 右下角坐标 [x, y]，x为横坐标，y为纵坐标 |
 
 ---
 
@@ -185,7 +179,7 @@ print(f"置信度: {result['confidence']}")
 if result['tamper_regions']:
     print("篡改区域:")
     for i, region in enumerate(result['tamper_regions'], 1):
-        print(f"  区域{i}: 左({region['left']}) 上({region['top']}) 右({region['right']}) 下({region['bottom']})")
+        print(f"  区域{i}: 左上{region['left_top']}, 右下{region['right_bottom']}")
 
 # 保存标记图片
 if result['marked_image_base64']:
