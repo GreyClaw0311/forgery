@@ -99,7 +99,7 @@ class MLDetector:
     
     def _extract_gb_features(self, image_path: str) -> np.ndarray:
         """提取 GB 分类器所需的特征"""
-        from train.gb_classifier.features import extract_all_features
+        from algorithms.features import extract_all_features
         return extract_all_features(image_path)
     
     def _extract_pixel_features(self, image: np.ndarray) -> Tuple[np.ndarray, list]:
@@ -129,8 +129,8 @@ class MLDetector:
     
     def _extract_patch_features(self, patch: np.ndarray) -> np.ndarray:
         """从图像块提取特征"""
-        from train.pixel_segmentation.train_pixel import EnhancedFeatureExtractor
-        extractor = EnhancedFeatureExtractor(32)
+        from algorithms.features import PixelFeatureExtractor
+        extractor = PixelFeatureExtractor(32)
         return extractor.extract(patch)
     
     def predict(self, image_path: str) -> Dict:

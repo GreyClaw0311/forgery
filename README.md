@@ -12,6 +12,7 @@
 
 - ✅ **多算法支持**: ELA、DCT、Fusion、ML 四种检测算法
 - ✅ **像素级检测**: ML 算法支持像素级篡改区域定位
+- ✅ **篡改区域坐标**: 输出篡改区域矩形坐标
 - ✅ **GPU 加速**: 支持 PyTorch GPU 加速推理
 - ✅ **REST API**: FastAPI 服务，易于集成
 
@@ -61,38 +62,38 @@ curl http://localhost:8000/health
 
 ```json
 {
-  "status": "ok",
+  "status": "0001:服务运行正常.",
   "timestamp": "2026-03-20T10:00:00",
   "algorithms": ["ela", "dct", "fusion", "ml"]
 }
 ```
 
-### 检测图片 (文件上传)
+### 检测图片
 
 ```bash
-curl -X POST "http://localhost:8000/detect" \
-  -F "file=@test.jpg" \
-  -F "algorithm=ml"
+curl -X POST "http://localhost:8000/tamper_detection/v1/tamper_detect_img" \
+  -d "image_base64=$(base64 -w 0 test.jpg)" \
+  -d "algorithm=ml"
 ```
 
 **响应:**
 
 ```json
 {
+  "status": "0001:解析成功.",
   "is_tampered": true,
   "confidence": 0.92,
   "mask_base64": "iVBORw0KGgoAAAANS...",
+  "marked_image_base64": "/9j/4AAQSkZJRgABAQ...",
+  "tamper_regions": [
+    {
+      "left_top": [120, 85],
+      "right_bottom": [276, 227]
+    }
+  ],
   "algorithm": "ml",
   "processing_time": 0.35
 }
-```
-
-### 检测图片 (Base64)
-
-```bash
-curl -X POST "http://localhost:8000/detect_base64" \
-  -F "image_base64=$(base64 -w 0 test.jpg)" \
-  -F "algorithm=ml"
 ```
 
 ---
@@ -107,8 +108,6 @@ curl -X POST "http://localhost:8000/detect_base64" \
 - 单特征检测，速度快
 - 适合检测 JPEG 篡改
 
-**输出**: 篡改区域热力图 + 是否篡改 + 置信度
-
 ### 2. DCT (Discrete Cosine Transform)
 
 **原理**: 分析 DCT 系数分布，篡改区域 DCT 特征异常。
@@ -117,17 +116,13 @@ curl -X POST "http://localhost:8000/detect_base64" \
 - 单特征检测，速度快
 - 适合检测块效应
 
-**输出**: 篡改区域热力图 + 是否篡改 + 置信度
-
 ### 3. Fusion (多特征融合)
 
-**原理**: 融合 ELA、DCT、Noise、Copy-Move 等多特征，通过自适应权重融合。
+**原理**: 融合 ELA、DCT 等多特征，通过自适应权重融合。
 
 **特点**:
 - 多特征综合判断
 - 精度高于单特征
-
-**输出**: 篡改区域热力图 + 是否篡改 + 置信度
 
 ### 4. ML (机器学习串联) ⭐ 推荐
 
@@ -140,8 +135,33 @@ curl -X POST "http://localhost:8000/detect_base64" \
 - 两阶段检测，精度最高
 - 支持 GPU 加速
 - 像素级定位
+- 输出篡改区域坐标
 
-**输出**: 是否篡改 + 置信度 + 篡改区域掩码 (Base64)
+---
+
+## 接口文档
+
+详细接口文档请参考: [docs/api_document.md](docs/api_document.md)
+
+### 状态码说明
+
+| 状态码 | 描述 | 说明 |
+|--------|------|------|
+| 0000 | 未知异常 | 服务发生未捕获的全局异常 |
+| 0001 | 解析成功/服务运行正常 | 业务处理成功 |
+| 0002 | base64解码异常 | image_base64参数解码失败 |
+| 0004 | 参数格式错误 | 参数缺失、类型错误或格式不符合要求 |
+| 0007 | 请求参数内容错误或为空 | 参数为空或无法解析图片 |
+
+### 出参说明
+
+| 参数 | 说明 |
+|------|------|
+| is_tampered | 是否检测到篡改 |
+| confidence | 置信度 (0-1) |
+| mask_base64 | 篡改区域掩码图片 (PNG) |
+| marked_image_base64 | 标记篡改区域的原图片 (JPEG) |
+| tamper_regions | 篡改区域矩形坐标列表 |
 
 ---
 
@@ -153,68 +173,34 @@ forgery/
 ├── requirements.txt             # 服务依赖
 │
 ├── data/                        # 测试数据
-│   ├── README.md               # 数据说明
 │   └── tamper_data/            # 测试图片
 │       ├── easy/               # 简单篡改
 │       ├── difficult/          # 困难篡改
 │       └── good/               # 正常图片
 │
 ├── docs/                        # 文档
+│   ├── api_document.md         # 接口文档
 │   ├── final_report.md         # 最终报告
-│   ├── experiment_report_*.md  # 实验报告
-│   └── optimization_guide.md   # 优化指南
+│   └── experiment_report_*.md  # 实验报告
 │
-├── release/                     # 服务代码
-│   ├── main.py                 # FastAPI 主程序
-│   ├── requirements.txt        # 服务依赖
-│   │
-│   ├── algorithms/             # 算法实现
-│   │   ├── ela_detector.py     # ELA 检测器
-│   │   ├── dct_detector.py     # DCT 检测器
-│   │   ├── fusion_detector.py  # 融合检测器
-│   │   └── ml_detector.py      # ML 检测器
-│   │
-│   ├── models/                 # 模型文件 (需上传)
-│   │   ├── gb_classifier/      # GB 分类器
-│   │   └── pixel_segmentation/ # 像素级模型
-│   │
-│   ├── train/                  # 训练脚本
-│   │   ├── gb_classifier/      # GB 训练
-│   │   └── pixel_segmentation/ # 像素级训练
-│   │
-│   └── utils/                  # 工具函数
-│       └── postprocess.py      # 后处理
-│
-└── train/                       # 训练目录 (外部使用)
+└── release/                     # 服务代码 (部署用)
+    ├── main.py                 # FastAPI 主程序
+    ├── requirements.txt        # 服务依赖
+    │
+    ├── algorithms/             # 算法实现
+    │   ├── ela_detector.py     # ELA 检测器
+    │   ├── dct_detector.py     # DCT 检测器
+    │   ├── fusion_detector.py  # 融合检测器
+    │   ├── ml_detector.py      # ML 检测器
+    │   └── features.py         # 特征提取模块
+    │
+    ├── models/                 # 模型文件 (需上传)
+    │   ├── gb_classifier/      # GB 分类器
+    │   └── pixel_segmentation/ # 像素级模型
+    │
+    └── utils/                  # 工具函数
+        └── postprocess.py      # 后处理
 ```
-
----
-
-## 训练模型
-
-### 1. 处理数据
-
-```bash
-python process_data.py \
-    --source /path/to/raw/data \
-    --output /path/to/processed/data
-```
-
-### 2. 训练 GB 分类器
-
-```bash
-cd release/train/gb_classifier
-python train_gb.py --data_dir /path/to/data --output_dir ../../models/gb_classifier
-```
-
-### 3. 训练像素级模型
-
-```bash
-cd release/train/pixel_segmentation
-python train_pixel.py --data_dir /path/to/data --output_dir ../../models/pixel_segmentation --model-type lgb
-```
-
-详细说明请参考 `train/` 目录下的 README.md。
 
 ---
 
@@ -238,6 +224,14 @@ python train_pixel.py --data_dir /path/to/data --output_dir ../../models/pixel_s
 ---
 
 ## 更新日志
+
+### 2026-03-23
+
+- ✅ 重构目录结构，移除训练代码
+- ✅ 增加状态码支持 (0000/0001/0002/0004/0007)
+- ✅ 增加 tamper_regions 篡改区域坐标输出
+- ✅ 增加 marked_image_base64 标记图片输出
+- ✅ 接口路由改为 /tamper_detection/v1/tamper_detect_img
 
 ### 2026-03-20
 
