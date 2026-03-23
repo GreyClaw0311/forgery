@@ -83,11 +83,10 @@ def get_ml_detector():
 # 响应模型
 class TamperRegion(BaseModel):
     """篡改区域矩形"""
-    x: int          # 左上角 x 坐标
-    y: int          # 左上角 y 坐标
-    width: int      # 宽度
-    height: int     # 高度
-    area: int       # 面积 (像素数)
+    left: int       # 左边界 x 坐标
+    top: int        # 上边界 y 坐标
+    right: int      # 右边界 x 坐标
+    bottom: int     # 下边界 y 坐标
 
 
 class DetectionResponse(BaseModel):
@@ -327,11 +326,10 @@ def _extract_regions(mask: np.ndarray, min_area: int = 100) -> Optional[List[Tam
         if area >= min_area:
             x, y, w, h = cv2.boundingRect(contour)
             regions.append(TamperRegion(
-                x=int(x),
-                y=int(y),
-                width=int(w),
-                height=int(h),
-                area=int(area)
+                left=int(x),
+                top=int(y),
+                right=int(x + w),
+                bottom=int(y + h)
             ))
     
     return regions if regions else None
