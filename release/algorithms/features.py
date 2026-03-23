@@ -1,16 +1,17 @@
 """
 图像篡改检测特征提取模块
-包含 Top 10 关键特征的实现
+推理专用 - 从训练代码中提取
 """
 
 import cv2
 import numpy as np
-from scipy import ndimage
-from scipy.fftpack import dct
+from typing import List
 
+
+# ============== GB分类器特征提取 ==============
 
 def extract_fft_features(image_path):
-    """FFT频域分析 - 重要性: 14.23%"""
+    """FFT频域分析"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return 0.0
@@ -39,24 +40,15 @@ def extract_fft_features(image_path):
     return float(high_freq / (low_freq + 1e-6))
 
 
-def detect_tampering_fft(image_path, threshold=0.3):
-    score = extract_fft_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_resampling_features(image_path):
-    """重采样检测 - 重要性: 12.09%"""
+    """重采样检测"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return 0.0
     
-    # 计算梯度
     gx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
     gy = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
     
-    # 计算周期性
     gx_fft = np.abs(np.fft.fft2(gx))
     gy_fft = np.abs(np.fft.fft2(gy))
     
@@ -64,15 +56,8 @@ def extract_resampling_features(image_path):
     return float(score / 1000)
 
 
-def detect_tampering_resampling(image_path, threshold=0.5):
-    score = extract_resampling_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_color_features(image_path):
-    """颜色一致性 - 重要性: 11.45%"""
+    """颜色一致性"""
     img = cv2.imread(image_path)
     if img is None:
         return 0.0
@@ -95,15 +80,8 @@ def extract_color_features(image_path):
     return float(score)
 
 
-def detect_tampering_color(image_path, threshold=5.0):
-    score = extract_color_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_jpeg_block_features(image_path):
-    """JPEG块效应 - 重要性: 10.48%"""
+    """JPEG块效应"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return 0.0
@@ -111,7 +89,6 @@ def extract_jpeg_block_features(image_path):
     h, w = img.shape
     block_scores = []
     
-    # 检测8x8块边界的跳变
     for i in range(7, h-1, 8):
         diff = np.abs(img[i, :].astype(float) - img[i+1, :].astype(float))
         block_scores.append(np.mean(diff))
@@ -123,23 +100,14 @@ def extract_jpeg_block_features(image_path):
     return float(np.mean(block_scores)) if block_scores else 0.0
 
 
-def detect_tampering_jpeg_block(image_path, threshold=10.0):
-    score = extract_jpeg_block_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_splicing_features(image_path):
-    """拼接检测 - 重要性: 9.94%"""
+    """拼接检测"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return 0.0
     
-    # Canny边缘检测
     edges = cv2.Canny(img, 50, 150)
     
-    # 计算边缘密度变化
     h, w = edges.shape
     block_size = 32
     densities = []
@@ -156,26 +124,17 @@ def extract_splicing_features(image_path):
     return float(score)
 
 
-def detect_tampering_splicing(image_path, threshold=0.5):
-    score = extract_splicing_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_cfa_features(image_path):
-    """CFA插值检测 - 重要性: 9.53%"""
+    """CFA插值检测"""
     img = cv2.imread(image_path)
     if img is None:
         return 0.0
     
-    # 转换到频域检测插值痕迹
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(float)
     f = np.fft.fft2(gray)
     fshift = np.fft.fftshift(f)
     magnitude = np.abs(fshift)
     
-    # 检测周期性峰值（插值痕迹）
     h, w = magnitude.shape
     center_region = magnitude[h//2-20:h//2+20, w//2-20:w//2+20]
     
@@ -183,15 +142,8 @@ def extract_cfa_features(image_path):
     return float(score)
 
 
-def detect_tampering_cfa(image_path, threshold=0.1):
-    score = extract_cfa_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_contrast_features(image_path):
-    """对比度一致性 - 重要性: 8.98%"""
+    """对比度一致性"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return 0.0
@@ -212,22 +164,14 @@ def extract_contrast_features(image_path):
     return float(score)
 
 
-def detect_tampering_contrast(image_path, threshold=5.0):
-    score = extract_contrast_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_edge_features(image_path):
-    """边缘一致性 - 重要性: 8.48%"""
+    """边缘一致性"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return 0.0
     
     edges = cv2.Canny(img, 50, 150)
     
-    # 计算边缘方向的一致性
     gx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
     gy = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
     
@@ -241,20 +185,12 @@ def extract_edge_features(image_path):
     return float(score)
 
 
-def detect_tampering_edge(image_path, threshold=1.0):
-    score = extract_edge_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_jpeg_ghost_features(image_path):
-    """JPEG伪影检测 - 重要性: 7.62%"""
+    """JPEG伪影检测"""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return 0.0
     
-    # 检测不同压缩质量下的差异
     encode_param = [cv2.IMWRITE_JPEG_QUALITY, 90]
     _, encoded = cv2.imencode('.jpg', img, encode_param)
     decoded = cv2.imdecode(encoded, cv2.IMREAD_GRAYSCALE)
@@ -264,15 +200,8 @@ def extract_jpeg_ghost_features(image_path):
     return float(score)
 
 
-def detect_tampering_jpeg_ghost(image_path, threshold=1.0):
-    score = extract_jpeg_ghost_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 def extract_saturation_features(image_path):
-    """饱和度一致性 - 重要性: 7.20%"""
+    """饱和度一致性"""
     img = cv2.imread(image_path)
     if img is None:
         return 0.0
@@ -296,13 +225,6 @@ def extract_saturation_features(image_path):
     return float(score)
 
 
-def detect_tampering_saturation(image_path, threshold=10.0):
-    score = extract_saturation_features(image_path)
-    if score is None:
-        return False, 0.0
-    return score > threshold, score
-
-
 # 特征名称列表
 FEATURE_NAMES = ['jpeg_block', 'contrast', 'saturation', 'jpeg_ghost', 'fft', 
                  'cfa', 'edge', 'color', 'resampling', 'splicing']
@@ -321,23 +243,9 @@ FEATURE_EXTRACTORS = {
     'saturation': extract_saturation_features,
 }
 
-# 检测函数映射
-DETECT_FUNCTIONS = {
-    'fft': detect_tampering_fft,
-    'resampling': detect_tampering_resampling,
-    'color': detect_tampering_color,
-    'jpeg_block': detect_tampering_jpeg_block,
-    'splicing': detect_tampering_splicing,
-    'cfa': detect_tampering_cfa,
-    'contrast': detect_tampering_contrast,
-    'edge': detect_tampering_edge,
-    'jpeg_ghost': detect_tampering_jpeg_ghost,
-    'saturation': detect_tampering_saturation,
-}
 
-
-def extract_all_features(image_path):
-    """提取所有特征"""
+def extract_all_features(image_path: str) -> np.ndarray:
+    """提取所有特征 (GB分类器用)"""
     features = []
     for name in FEATURE_NAMES:
         extractor = FEATURE_EXTRACTORS.get(name)
@@ -350,3 +258,162 @@ def extract_all_features(image_path):
         else:
             features.append(0.0)
     return np.array(features)
+
+
+# ============== 像素级特征提取器 ==============
+
+class PixelFeatureExtractor:
+    """像素级特征提取器 (用于滑动窗口)"""
+    
+    def __init__(self, window_size: int = 32):
+        self.window_size = window_size
+        self.half = window_size // 2
+    
+    def extract(self, patch: np.ndarray) -> np.ndarray:
+        """提取增强特征 (57维)"""
+        features = []
+        
+        if len(patch.shape) == 3:
+            gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = patch
+        gray = gray.astype(np.float32)
+        
+        # 1. DCT特征 (8个)
+        dct = cv2.dct(gray)
+        dct_low = dct[:8, :8]
+        dct_high = dct[8:, 8:]
+        
+        features.append(np.mean(np.abs(dct_low)))
+        features.append(np.std(dct_low))
+        features.append(np.mean(np.abs(dct_high)))
+        features.append(np.std(dct_high))
+        features.append(np.percentile(np.abs(dct_low), 95))
+        features.append(np.percentile(np.abs(dct_high), 95))
+        features.append(np.max(np.abs(dct_low)))
+        features.append(np.sum(np.abs(dct_high)) / (np.sum(np.abs(dct)) + 1e-8))
+        
+        # 2. ELA特征 (4个)
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+        _, encoded = cv2.imencode('.jpg', patch, encode_param)
+        decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        ela = np.abs(patch.astype(np.float32) - decoded.astype(np.float32))
+        
+        features.append(np.mean(ela))
+        features.append(np.std(ela))
+        features.append(np.percentile(ela.flatten(), 95))
+        features.append(np.max(ela))
+        
+        # 3. Noise特征 (6个)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        noise = gray - blurred
+        
+        features.append(np.mean(np.abs(noise)))
+        features.append(np.std(noise))
+        features.append(np.percentile(np.abs(noise), 95))
+        features.append(np.max(np.abs(noise)))
+        features.append(np.percentile(np.abs(noise), 99))
+        features.append(np.median(np.abs(noise)))
+        
+        # 4. Edge特征 (6个)
+        edges = cv2.Canny(gray.astype(np.uint8), 50, 150)
+        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        mag = np.sqrt(sobel_x**2 + sobel_y**2)
+        
+        features.append(np.mean(edges > 0))
+        features.append(np.mean(mag))
+        features.append(np.std(mag))
+        features.append(np.max(mag))
+        features.append(np.percentile(mag, 95))
+        features.append(np.sum(mag > np.percentile(mag, 90)) / mag.size)
+        
+        # 5. 纹理特征 (8个)
+        diff_h = np.abs(gray[:, 1:] - gray[:, :-1])
+        diff_v = np.abs(gray[1:, :] - gray[:-1, :])
+        
+        features.append(np.mean(diff_h))
+        features.append(np.std(diff_h))
+        features.append(np.mean(diff_v))
+        features.append(np.std(diff_v))
+        features.append(np.percentile(diff_h, 95))
+        features.append(np.percentile(diff_v, 95))
+        features.append(np.percentile(np.abs(gray[1:, 1:] - gray[:-1, :-1]), 95))
+        features.append(np.std(gray))
+        
+        # 6. Color特征 (5个)
+        if len(patch.shape) == 3:
+            hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+            features.append(np.std(hsv[:,:,0]))
+            features.append(np.std(hsv[:,:,1]))
+            features.append(np.std(hsv[:,:,2]))
+            features.append(np.std(patch[:,:,0]))
+            features.append(np.std(patch[:,:,1]))
+        else:
+            features.extend([0] * 5)
+        
+        # 7. LBP特征 (8个)
+        lbp = self._compute_lbp(gray.astype(np.uint8))
+        lbp_hist, _ = np.histogram(lbp, bins=8, range=(0, 256))
+        lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
+        features.extend(lbp_hist.tolist())
+        
+        # 8. 频域特征 (6个)
+        f = np.fft.fft2(gray)
+        fshift = np.fft.fftshift(f)
+        magnitude = np.abs(fshift)
+        
+        h, w = magnitude.shape
+        center_h, center_w = h // 2, w // 2
+        radius = min(h, w) // 4
+        
+        low_freq = magnitude[center_h-radius:center_h+radius, center_w-radius:center_w+radius]
+        features.append(np.mean(low_freq))
+        features.append(np.std(low_freq))
+        
+        high_freq_mask = np.ones_like(magnitude, dtype=bool)
+        high_freq_mask[center_h-radius:center_h+radius, center_w-radius:center_w+radius] = False
+        high_freq = magnitude[high_freq_mask]
+        features.append(np.mean(high_freq))
+        features.append(np.std(high_freq))
+        
+        features.append(np.sum(low_freq) / (np.sum(magnitude) + 1e-8))
+        features.append(np.percentile(high_freq, 95))
+        
+        # 9. 局部对比度特征 (6个)
+        local_mean = cv2.blur(gray, (8, 8))
+        local_var = cv2.blur((gray - local_mean)**2, (8, 8))
+        
+        features.append(np.mean(local_var))
+        features.append(np.std(local_var))
+        features.append(np.percentile(local_var, 95))
+        
+        local_contrast = np.sqrt(local_var)
+        features.append(np.mean(local_contrast))
+        features.append(np.std(local_contrast))
+        features.append(np.percentile(local_contrast, 95))
+        
+        return np.array(features, dtype=np.float32)
+    
+    def _compute_lbp(self, gray: np.ndarray, radius: int = 1, n_points: int = 8) -> np.ndarray:
+        """计算LBP特征"""
+        h, w = gray.shape
+        lbp = np.zeros((h - 2*radius, w - 2*radius), dtype=np.uint8)
+        
+        for i in range(radius, h - radius):
+            for j in range(radius, w - radius):
+                center = gray[i, j]
+                code = 0
+                for p in range(n_points):
+                    angle = 2 * np.pi * p / n_points
+                    x = int(i + radius * np.cos(angle))
+                    y = int(j + radius * np.sin(angle))
+                    if gray[x, y] >= center:
+                        code |= (1 << p)
+                lbp[i - radius, j - radius] = code
+        
+        return lbp
+
+
+# 兼容性别名
+EnhancedFeatureExtractor = PixelFeatureExtractor
