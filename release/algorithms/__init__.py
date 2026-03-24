@@ -10,14 +10,20 @@
 """
 
 from .ela_detector import ELADetector
-from .dct_detector import DCTDetector
-from .fusion_detector import FusionDetector
+from .dct_detector import DCTBlockDetector
+from .fusion_detector import AdaptiveFusion
 from .features import extract_all_features, PixelFeatureExtractor
+
+# 兼容性别名
+DCTDetector = DCTBlockDetector
+FusionDetector = AdaptiveFusion
 
 __all__ = [
     'ELADetector', 
-    'DCTDetector', 
-    'FusionDetector',
+    'DCTBlockDetector', 
+    'DCTDetector',  # 兼容性别名
+    'AdaptiveFusion',
+    'FusionDetector',  # 兼容性别名
     'extract_all_features',
     'PixelFeatureExtractor'
 ]
