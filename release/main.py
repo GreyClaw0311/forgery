@@ -278,8 +278,9 @@ def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
     detector = get_ml_detector()
     result = detector.predict(image_path)
     
-    is_tampered = result['is_tampered']
-    confidence = result['confidence']
+    # 确保转换为 Python 原生类型
+    is_tampered = bool(result['is_tampered'])
+    confidence = float(result['confidence'])
     mask = result.get('mask')
     
     return {
@@ -302,9 +303,9 @@ def _detect_with_ela(image: np.ndarray) -> Dict:
     mask = detector.get_mask(heatmap, method='otsu')
     
     # 计算篡改比例作为置信度
-    tamper_ratio = np.sum(mask > 0) / mask.size
-    is_tampered = tamper_ratio > 0.01  # 超过1%像素认为篡改
-    confidence = min(tamper_ratio * 10, 1.0)  # 归一化置信度
+    tamper_ratio = float(np.sum(mask > 0)) / mask.size
+    is_tampered = bool(tamper_ratio > 0.01)  # 超过1%像素认为篡改
+    confidence = float(min(tamper_ratio * 10, 1.0))  # 归一化置信度
     
     return {
         "is_tampered": is_tampered,
@@ -325,10 +326,10 @@ def _detect_with_dct(image: np.ndarray) -> Dict:
     # 生成掩码
     mask = detector.get_mask(heatmap)
     
-    # 计算篡改比例作为置信度
-    tamper_ratio = np.sum(mask > 0) / mask.size
-    is_tampered = tamper_ratio > 0.01
-    confidence = min(tamper_ratio * 10, 1.0)
+    # 计算篡改比例作为置信度 (转换为 Python 原生类型)
+    tamper_ratio = float(np.sum(mask > 0)) / mask.size
+    is_tampered = bool(tamper_ratio > 0.01)
+    confidence = float(min(tamper_ratio * 10, 1.0))
     
     return {
         "is_tampered": is_tampered,
@@ -363,10 +364,10 @@ def _detect_with_fusion(image: np.ndarray) -> Dict:
     # 生成融合掩码
     mask = fusion.threshold(fused_heatmap, method='fixed', threshold=0.2)
     
-    # 计算篡改比例作为置信度
-    tamper_ratio = np.sum(mask > 0) / mask.size
-    is_tampered = tamper_ratio > 0.01
-    confidence = min(tamper_ratio * 10, 1.0)
+    # 计算篡改比例作为置信度 (转换为 Python 原生类型)
+    tamper_ratio = float(np.sum(mask > 0)) / mask.size
+    is_tampered = bool(tamper_ratio > 0.01)
+    confidence = float(min(tamper_ratio * 10, 1.0))
     
     return {
         "is_tampered": is_tampered,
@@ -388,7 +389,7 @@ def _extract_regions(mask: np.ndarray, min_area: int = 100) -> Optional[List[Tam
     Returns:
         篡改区域列表，如果无篡改则返回 null
     """
-    if mask is None or mask.sum() == 0:
+    if mask is None or int(mask.sum()) == 0:
         return None
     
     # 确保是二值图
@@ -435,7 +436,7 @@ def _create_marked_image(image: np.ndarray, mask: np.ndarray) -> Optional[str]:
     Returns:
         标记后的图片 Base64 编码
     """
-    if mask is None or mask.sum() == 0:
+    if mask is None or int(mask.sum()) == 0:
         return None
     
     # 确保掩码和原图尺寸一致
