@@ -8,15 +8,24 @@
 3. 生成测试报告 (效果 + 性能)
 4. 保存推理结果图片
 
+数据集结构:
+|-- test
+|   |-- images
+|   `-- masks
+
+判断逻辑:
+- mask 全黑 → good (未篡改)
+- mask 非全黑 → 篡改
+
 使用方法:
     # 单张测试
     python test_service.py --mode single --image test.jpg --algorithm ml
     
     # 批量测试
-    python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm ml
+    python test_service.py --mode batch --data_dir ./test --algorithm ml
     
     # 全算法对比测试
-    python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm all
+    python test_service.py --mode batch --data_dir ./test --algorithm all
 """
 
 import os
@@ -47,10 +56,11 @@ class TamperDetectionTester:
         """
         self.server_url = server_url
         self.output_dir = output_dir
-        self.timeout = 60  # 请求超时时间
+        self.timeout = 120  # 请求超时时间
         
         # 创建输出目录
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(os.path.join(output_dir, 'images'), exist_ok=True)
     
     def check_service(self) -> bool:
         """检查服务是否正常运行"""
@@ -119,7 +129,33 @@ class TamperDetectionTester:
                 'request_time': time.time() - start_time
             }
     
-    def save_result_image(self, image_path: str, result: Dict, output_path: str) -> bool:
+    def check_mask_label(self, mask_path: str) -> int:
+        """
+        根据 mask 判断标签
+        
+        Args:
+            mask_path: mask 图片路径
+            
+        Returns:
+            0: 正常 (mask 全黑)
+            1: 篡改 (mask 非全黑)
+        """
+        if not os.path.exists(mask_path):
+            # 如果没有对应的 mask，默认认为是篡改图片
+            return 1
+        
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            return 1
+        
+        # 判断是否全黑 (所有像素值为 0)
+        if mask.sum() == 0:
+            return 0  # 正常
+        else:
+            return 1  # 篡改
+    
+    def save_result_image(self, image_path: str, result: Dict, output_path: str, 
+                          true_label: int = None, mask_path: str = None) -> bool:
         """
         保存检测结果图片
         
@@ -127,6 +163,8 @@ class TamperDetectionTester:
             image_path: 原图路径
             result: 检测结果
             output_path: 输出路径
+            true_label: 真实标签
+            mask_path: mask 路径
             
         Returns:
             是否成功
@@ -137,31 +175,63 @@ class TamperDetectionTester:
             if image is None:
                 return False
             
-            # 创建标记图
-            marked_image = image.copy()
+            # 创建结果图 (2列: 原图+结果, mask+预测)
+            h, w = image.shape[:2]
+            
+            # 创建画布
+            canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
+            
+            # 放置原图
+            canvas[:h, :w] = image
+            
+            # 中间分隔线
+            canvas[:, w:w+20] = 200
+            
+            # 创建预测结果图
+            pred_image = image.copy()
             
             # 绘制篡改区域
             if result.get('tamper_regions'):
                 for region in result['tamper_regions']:
                     x1, y1 = region['left_top']
                     x2, y2 = region['right_bottom']
-                    cv2.rectangle(marked_image, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                    cv2.putText(marked_image, f"{result.get('confidence', 0):.2f}", 
-                               (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                    cv2.rectangle(pred_image, (x1, y1), (x2, y2), (0, 0, 255), 3)
             
-            # 添加信息文字
-            info_text = f"Tampered: {result.get('is_tampered', False)} | Conf: {result.get('confidence', 0):.3f}"
-            cv2.putText(marked_image, info_text, (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            # 添加预测信息
+            pred_label = 1 if result.get('is_tampered') else 0
+            pred_text = "TAMPERED" if pred_label else "GOOD"
+            color = (0, 0, 255) if pred_label else (0, 255, 0)
+            cv2.putText(pred_image, f"Pred: {pred_text}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+            cv2.putText(pred_image, f"Conf: {result.get('confidence', 0):.3f}", (10, 70), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            
+            # 添加真实标签
+            if true_label is not None:
+                true_text = "TAMPERED" if true_label else "GOOD"
+                true_color = (0, 100, 255) if true_label else (100, 255, 0)
+                cv2.putText(pred_image, f"True: {true_text}", (10, 110), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, true_color, 2)
+                
+                # 标记是否正确
+                is_correct = pred_label == true_label
+                correct_text = "CORRECT" if is_correct else "WRONG"
+                correct_color = (0, 255, 0) if is_correct else (0, 0, 255)
+                cv2.putText(pred_image, correct_text, (10, 150), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, correct_color, 2)
+            
+            # 放置预测结果图
+            canvas[:h, w+20:] = pred_image
             
             # 保存
-            cv2.imwrite(output_path, marked_image)
+            cv2.imwrite(output_path, canvas)
             return True
         except Exception as e:
             print(f"保存图片失败: {e}")
             return False
     
-    def test_single(self, image_path: str, algorithm: str = "ml", save_image: bool = True):
+    def test_single(self, image_path: str, algorithm: str = "ml", save_image: bool = True,
+                    mask_path: str = None):
         """
         单张图片测试
         
@@ -169,6 +239,7 @@ class TamperDetectionTester:
             image_path: 图片路径
             algorithm: 算法名称
             save_image: 是否保存结果图片
+            mask_path: mask 路径 (用于判断真实标签)
         """
         print("=" * 60)
         print("单张图片测试")
@@ -181,6 +252,12 @@ class TamperDetectionTester:
         print(f"图片: {image_path}")
         print(f"算法: {algorithm}")
         print("-" * 60)
+        
+        # 判断真实标签
+        true_label = None
+        if mask_path:
+            true_label = self.check_mask_label(mask_path)
+            print(f"真实标签: {'篡改' if true_label else '正常'}")
         
         # 检测
         start_time = time.time()
@@ -201,13 +278,18 @@ class TamperDetectionTester:
             for i, region in enumerate(result['tamper_regions']):
                 print(f"    区域{i+1}: {region['left_top']} -> {region['right_bottom']}")
         
+        if true_label is not None:
+            pred_label = 1 if result.get('is_tampered') else 0
+            is_correct = pred_label == true_label
+            print(f"\n  判断结果: {'✓ 正确' if is_correct else '✗ 错误'}")
+        
         # 保存结果图片
         if save_image:
             image_name = os.path.basename(image_path)
             output_name = f"{os.path.splitext(image_name)[0]}_{algorithm}.jpg"
-            output_path = os.path.join(self.output_dir, output_name)
+            output_path = os.path.join(self.output_dir, 'images', output_name)
             
-            if self.save_result_image(image_path, result, output_path):
+            if self.save_result_image(image_path, result, output_path, true_label, mask_path):
                 print(f"\n✓ 结果图片已保存: {output_path}")
     
     def test_batch(self, data_dir: str, algorithm: str = "ml", save_images: bool = True) -> Dict:
@@ -215,7 +297,7 @@ class TamperDetectionTester:
         批量图片测试
         
         Args:
-            data_dir: 数据目录 (包含 easy/difficult/good 子目录)
+            data_dir: 数据目录 (包含 images/ 和 masks/ 子目录)
             algorithm: 算法名称
             save_images: 是否保存结果图片
             
@@ -231,51 +313,53 @@ class TamperDetectionTester:
             return {}
         
         # 收集测试图片
+        images_dir = os.path.join(data_dir, 'images')
+        masks_dir = os.path.join(data_dir, 'masks')
+        
+        if not os.path.exists(images_dir):
+            print(f"✗ 图片目录不存在: {images_dir}")
+            return {}
+        
+        # 遍历图片
         test_images = []
-        
-        # Easy (简单篡改)
-        easy_dir = os.path.join(data_dir, 'easy', 'images')
-        if os.path.exists(easy_dir):
-            for f in sorted(os.listdir(easy_dir)):
-                if f.lower().endswith(('.jpg', '.png', '.jpeg')):
-                    test_images.append({
-                        'path': os.path.join(easy_dir, f),
-                        'label': 1,  # 篡改
-                        'category': 'easy'
-                    })
-        
-        # Difficult (困难篡改)
-        diff_dir = os.path.join(data_dir, 'difficult', 'images')
-        if os.path.exists(diff_dir):
-            for f in sorted(os.listdir(diff_dir)):
-                if f.lower().endswith(('.jpg', '.png', '.jpeg')):
-                    test_images.append({
-                        'path': os.path.join(diff_dir, f),
-                        'label': 1,  # 篡改
-                        'category': 'difficult'
-                    })
-        
-        # Good (正常图片)
-        good_dir = os.path.join(data_dir, 'good')
-        if os.path.exists(good_dir):
-            for f in sorted(os.listdir(good_dir)):
-                if f.lower().endswith(('.jpg', '.png', '.jpeg')):
-                    test_images.append({
-                        'path': os.path.join(good_dir, f),
-                        'label': 0,  # 正常
-                        'category': 'good'
-                    })
+        for f in sorted(os.listdir(images_dir)):
+            if f.lower().endswith(('.jpg', '.png', '.jpeg', '.bmp')):
+                image_path = os.path.join(images_dir, f)
+                
+                # 查找对应的 mask
+                mask_name = os.path.splitext(f)[0] + '.png'  # mask 通常是 png
+                mask_path = os.path.join(masks_dir, mask_name)
+                
+                # 如果 mask 不存在，尝试其他扩展名
+                if not os.path.exists(mask_path):
+                    for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+                        mask_path = os.path.join(masks_dir, os.path.splitext(f)[0] + ext)
+                        if os.path.exists(mask_path):
+                            break
+                
+                # 根据 mask 判断标签
+                true_label = self.check_mask_label(mask_path)
+                
+                test_images.append({
+                    'path': image_path,
+                    'mask_path': mask_path if os.path.exists(mask_path) else None,
+                    'label': true_label,
+                    'category': 'tampered' if true_label == 1 else 'good'
+                })
         
         if not test_images:
             print("✗ 未找到测试图片")
             return {}
         
+        # 统计
+        tampered_count = sum(1 for t in test_images if t['label'] == 1)
+        good_count = sum(1 for t in test_images if t['label'] == 0)
+        
         print(f"数据目录: {data_dir}")
         print(f"算法: {algorithm}")
         print(f"测试图片数: {len(test_images)}")
-        print(f"  Easy: {sum(1 for t in test_images if t['category'] == 'easy')}")
-        print(f"  Difficult: {sum(1 for t in test_images if t['category'] == 'difficult')}")
-        print(f"  Good: {sum(1 for t in test_images if t['category'] == 'good')}")
+        print(f"  篡改图片: {tampered_count}")
+        print(f"  正常图片: {good_count}")
         print("-" * 60)
         
         # 测试统计
@@ -283,8 +367,6 @@ class TamperDetectionTester:
         correct = 0
         total = 0
         total_time = 0
-        gb_time = 0
-        detect_time = 0
         
         # 分类统计
         tp = 0  # 真阳性 (篡改->篡改)
@@ -296,10 +378,13 @@ class TamperDetectionTester:
         tampered_confidences = []
         normal_confidences = []
         
+        # 时间统计
+        processing_times = []
+        
         for i, item in enumerate(test_images):
             image_path = item['path']
+            mask_path = item['mask_path']
             true_label = item['label']
-            category = item['category']
             
             # 检测
             result = self.detect_single(image_path, algorithm)
@@ -313,6 +398,7 @@ class TamperDetectionTester:
                 
                 total += 1
                 total_time += request_time
+                processing_times.append(processing_time)
                 
                 # 统计
                 if pred_label == true_label:
@@ -334,13 +420,12 @@ class TamperDetectionTester:
                 # 保存图片
                 if save_images:
                     image_name = os.path.basename(image_path)
-                    output_name = f"{category}_{os.path.splitext(image_name)[0]}_{algorithm}.jpg"
-                    output_path = os.path.join(self.output_dir, output_name)
-                    self.save_result_image(image_path, result, output_path)
+                    output_name = f"{os.path.splitext(image_name)[0]}_{algorithm}.jpg"
+                    output_path = os.path.join(self.output_dir, 'images', output_name)
+                    self.save_result_image(image_path, result, output_path, true_label, mask_path)
                 
                 results.append({
                     'image': os.path.basename(image_path),
-                    'category': category,
                     'true_label': true_label,
                     'pred_label': pred_label,
                     'correct': pred_label == true_label,
@@ -349,9 +434,22 @@ class TamperDetectionTester:
                     'processing_time': processing_time,
                     'request_time': request_time
                 })
+            else:
+                # 检测失败
+                results.append({
+                    'image': os.path.basename(image_path),
+                    'true_label': true_label,
+                    'pred_label': None,
+                    'correct': False,
+                    'confidence': None,
+                    'gb_confidence': None,
+                    'processing_time': None,
+                    'request_time': result.get('request_time', 0),
+                    'error': result.get('message', 'Unknown error')
+                })
             
             # 进度
-            if (i + 1) % 10 == 0:
+            if (i + 1) % 10 == 0 or (i + 1) == len(test_images):
                 print(f"  进度: {i+1}/{len(test_images)} ({(i+1)/len(test_images)*100:.1f}%)")
         
         # 计算指标
@@ -363,6 +461,7 @@ class TamperDetectionTester:
         fnr = fn / (fn + tp) if (fn + tp) > 0 else 0
         
         avg_time = total_time / total if total > 0 else 0
+        avg_processing_time = np.mean(processing_times) if processing_times else 0
         avg_tampered_conf = np.mean(tampered_confidences) if tampered_confidences else 0
         avg_normal_conf = np.mean(normal_confidences) if normal_confidences else 0
         
@@ -373,13 +472,18 @@ class TamperDetectionTester:
                 'algorithm': algorithm,
                 'test_time': datetime.now().isoformat(),
                 'total_images': len(test_images),
-                'tested_images': total
+                'tested_images': total,
+                'tampered_images': tampered_count,
+                'good_images': good_count
             },
             'performance': {
                 'total_time': round(total_time, 2),
                 'avg_time': round(avg_time, 4),
-                'min_time': round(min(r['request_time'] for r in results), 4) if results else 0,
-                'max_time': round(max(r['request_time'] for r in results), 4) if results else 0,
+                'avg_processing_time': round(avg_processing_time, 4),
+                'min_time': round(min(processing_times), 4) if processing_times else 0,
+                'max_time': round(max(processing_times), 4) if processing_times else 0,
+                'p50_time': round(np.percentile(processing_times, 50), 4) if processing_times else 0,
+                'p95_time': round(np.percentile(processing_times, 95), 4) if processing_times else 0,
                 'fps': round(total / total_time, 2) if total_time > 0 else 0
             },
             'effectiveness': {
@@ -400,11 +504,6 @@ class TamperDetectionTester:
                 'tampered_count': len(tampered_confidences),
                 'normal_count': len(normal_confidences)
             },
-            'category_stats': {
-                'easy': self._calc_category_stats(results, 'easy'),
-                'difficult': self._calc_category_stats(results, 'difficult'),
-                'good': self._calc_category_stats(results, 'good')
-            },
             'detailed_results': results
         }
         
@@ -419,20 +518,6 @@ class TamperDetectionTester:
         
         return report
     
-    def _calc_category_stats(self, results: List[Dict], category: str) -> Dict:
-        """计算分类统计"""
-        cat_results = [r for r in results if r['category'] == category]
-        if not cat_results:
-            return {'count': 0, 'accuracy': 0, 'avg_confidence': 0, 'avg_time': 0}
-        
-        correct = sum(1 for r in cat_results if r['correct'])
-        return {
-            'count': len(cat_results),
-            'accuracy': round(correct / len(cat_results), 4),
-            'avg_confidence': round(np.mean([r['confidence'] for r in cat_results]), 4),
-            'avg_time': round(np.mean([r['request_time'] for r in cat_results]), 4)
-        }
-    
     def _print_report(self, report: Dict):
         """打印测试报告"""
         print("\n" + "=" * 60)
@@ -446,6 +531,8 @@ class TamperDetectionTester:
         print(f"  测试算法: {info['algorithm']}")
         print(f"  测试时间: {info['test_time']}")
         print(f"  测试图片: {info['tested_images']}/{info['total_images']}")
+        print(f"  篡改图片: {info['tampered_images']}")
+        print(f"  正常图片: {info['good_images']}")
         
         # 效果指标
         eff = report['effectiveness']
@@ -465,9 +552,12 @@ class TamperDetectionTester:
         perf = report['performance']
         print(f"\n【性能指标】")
         print(f"  总耗时: {perf['total_time']:.2f}s")
-        print(f"  平均耗时: {perf['avg_time']*1000:.2f}ms")
+        print(f"  平均处理时间: {perf['avg_processing_time']*1000:.2f}ms")
+        print(f"  平均请求时间: {perf['avg_time']*1000:.2f}ms")
         print(f"  最小耗时: {perf['min_time']*1000:.2f}ms")
         print(f"  最大耗时: {perf['max_time']*1000:.2f}ms")
+        print(f"  P50耗时: {perf['p50_time']*1000:.2f}ms")
+        print(f"  P95耗时: {perf['p95_time']*1000:.2f}ms")
         print(f"  处理速度: {perf['fps']:.2f} FPS")
         
         # 置信度统计
@@ -475,14 +565,6 @@ class TamperDetectionTester:
         print(f"\n【置信度统计】")
         print(f"  篡改图片平均置信度: {conf['avg_tampered_confidence']:.4f} ({conf['tampered_count']}张)")
         print(f"  正常图片平均置信度: {conf['avg_normal_confidence']:.4f} ({conf['normal_count']}张)")
-        
-        # 分类统计
-        print(f"\n【分类统计】")
-        for cat in ['easy', 'difficult', 'good']:
-            stats = report['category_stats'][cat]
-            if stats['count'] > 0:
-                print(f"  {cat:12s}: {stats['count']:3d}张, Acc={stats['accuracy']:.4f}, "
-                      f"Conf={stats['avg_confidence']:.4f}, Time={stats['avg_time']*1000:.1f}ms")
     
     def compare_algorithms(self, data_dir: str, algorithms: List[str] = None, save_images: bool = False):
         """
@@ -511,7 +593,7 @@ class TamperDetectionTester:
         print("\n" + "=" * 60)
         print("算法对比结果")
         print("=" * 60)
-        print(f"\n{'算法':<10} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1':<10} {'Avg Time':<12}")
+        print(f"\n{'算法':<10} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1':<10} {'Avg Time(ms)':<15}")
         print("-" * 70)
         
         for algo, report in reports.items():
@@ -519,7 +601,7 @@ class TamperDetectionTester:
                 eff = report['effectiveness']
                 perf = report['performance']
                 print(f"{algo:<10} {eff['accuracy']:<10.4f} {eff['precision']:<10.4f} "
-                      f"{eff['recall']:<10.4f} {eff['f1']:<10.4f} {perf['avg_time']*1000:<12.2f}ms")
+                      f"{eff['recall']:<10.4f} {eff['f1']:<10.4f} {perf['avg_processing_time']*1000:<15.2f}")
         
         # 保存对比报告
         compare_path = os.path.join(self.output_dir, f"compare_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
@@ -533,8 +615,9 @@ def main():
     parser.add_argument('--mode', type=str, choices=['single', 'batch', 'compare'], default='single',
                        help='测试模式: single(单张), batch(批量), compare(对比)')
     parser.add_argument('--image', type=str, help='单张测试图片路径')
-    parser.add_argument('--data_dir', type=str, default='./data/tamper_data',
-                       help='批量测试数据目录')
+    parser.add_argument('--mask', type=str, help='单张测试对应的mask路径')
+    parser.add_argument('--data_dir', type=str, default='./test',
+                       help='批量测试数据目录 (包含 images/ 和 masks/)')
     parser.add_argument('--algorithm', type=str, default='ml',
                        help='算法名称: ela/dct/fusion/ml/all')
     parser.add_argument('--server', type=str, default='http://localhost:8000',
@@ -562,7 +645,7 @@ def main():
         if not args.image:
             print("✗ 单张测试需要指定 --image 参数")
             sys.exit(1)
-        tester.test_single(args.image, args.algorithm, args.save_images)
+        tester.test_single(args.image, args.algorithm, args.save_images, args.mask)
     
     elif args.mode == 'batch':
         if args.algorithm == 'all':
