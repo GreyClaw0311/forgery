@@ -4,6 +4,10 @@
 
 FastAPI 服务，提供 REST API 接口
 
+流程:
+1. GB 分类器判断图片是否篡改 (前置检测)
+2. 如果篡改，使用指定算法定位篡改区域
+
 入参:
 - image_base64: 图片 Base64 编码
 - algorithm: 算法名称 (ela/dct/fusion/ml)
@@ -12,6 +16,7 @@ FastAPI 服务，提供 REST API 接口
 - status: 状态码
 - is_tampered: 是否篡改
 - confidence: 置信度
+- gb_confidence: GB 分类器置信度
 - mask_base64: 篡改区域掩码 Base64
 - marked_image_base64: 原图标记篡改区域图片 Base64
 - tamper_regions: 篡改区域矩形坐标列表
@@ -20,8 +25,9 @@ FastAPI 服务，提供 REST API 接口
 import os
 import sys
 import base64
+import pickle
 import tempfile
-import uuid
+import time
 from datetime import datetime
 from typing import Optional, List, Dict
 
@@ -42,6 +48,7 @@ from algorithms.ela_detector import ELADetector
 from algorithms.dct_detector import DCTBlockDetector
 from algorithms.fusion_detector import AdaptiveFusion
 from algorithms.ml_detector import MLDetectorGPU
+from algorithms.features import extract_all_features
 
 # 状态码定义
 STATUS_CODES = {
@@ -55,12 +62,95 @@ STATUS_CODES = {
 # 创建 FastAPI 应用
 app = FastAPI(
     title="图像篡改检测服务",
-    description="检测图像是否经过拼接、复制粘贴、修饰等篡改操作",
-    version="1.0.0"
+    description="检测图像是否经过拼接、复制粘贴、修饰等篡改操作\n\n流程: GB分类器(前置) → 区域定位算法",
+    version="2.0.0"
 )
 
 # 初始化检测器
 detectors = {}
+gb_model = None
+gb_scaler = None
+gb_threshold = 0.5
+
+
+def load_gb_classifier():
+    """加载 GB 分类器"""
+    global gb_model, gb_scaler, gb_threshold
+    
+    if gb_model is not None:
+        return True
+    
+    model_path = os.path.join(PROJECT_ROOT, 'release', 'models', 'gb_classifier', 'model.pkl')
+    scaler_path = os.path.join(PROJECT_ROOT, 'release', 'models', 'gb_classifier', 'scaler.pkl')
+    config_path = os.path.join(PROJECT_ROOT, 'release', 'models', 'gb_classifier', 'config.json')
+    
+    if not os.path.exists(model_path):
+        print(f"警告: GB 分类器模型不存在: {model_path}")
+        return False
+    
+    try:
+        with open(model_path, 'rb') as f:
+            gb_model = pickle.load(f)
+        print(f"GB 分类器已加载: {model_path}")
+        
+        if os.path.exists(scaler_path):
+            with open(scaler_path, 'rb') as f:
+                gb_scaler = pickle.load(f)
+            print(f"GB 标准化器已加载: {scaler_path}")
+        
+        # 加载配置
+        if os.path.exists(config_path):
+            import json
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                gb_threshold = config.get('optimal_threshold', 0.5)
+                print(f"GB 最优阈值: {gb_threshold}")
+        
+        return True
+    except Exception as e:
+        print(f"GB 分类器加载失败: {e}")
+        return False
+
+
+def gb_classify(image_path: str) -> Dict:
+    """
+    GB 分类器前置检测
+    
+    Args:
+        image_path: 图片路径
+        
+    Returns:
+        {
+            'is_tampered': bool,    # 是否篡改
+            'confidence': float,    # 置信度
+            'skipped': bool         # 是否跳过(模型未加载)
+        }
+    """
+    global gb_model, gb_scaler, gb_threshold
+    
+    result = {
+        'is_tampered': True,  # 默认认为篡改，继续后续检测
+        'confidence': 1.0,
+        'skipped': True
+    }
+    
+    if gb_model is None:
+        if not load_gb_classifier():
+            return result
+    
+    result['skipped'] = False
+    
+    try:
+        features = extract_all_features(image_path)
+        if features is not None and gb_scaler is not None:
+            features_scaled = gb_scaler.transform([features])
+            proba = gb_model.predict_proba(features_scaled)[0, 1]
+            result['is_tampered'] = bool(proba > gb_threshold)
+            result['confidence'] = float(proba)
+    except Exception as e:
+        print(f"GB 分类错误: {e}")
+    
+    return result
 
 
 def get_ela_detector():
@@ -100,14 +190,15 @@ class TamperRegion(BaseModel):
 
 class DetectionResponse(BaseModel):
     """检测响应"""
-    status: str                          # 状态码
-    is_tampered: bool                    # 是否篡改
-    confidence: float                    # 置信度 (0-1)
-    mask_base64: Optional[str]           # 篡改区域掩码 Base64
-    marked_image_base64: Optional[str]   # 原图标记篡改区域图片 Base64
+    status: str                              # 状态码
+    is_tampered: bool                        # 是否篡改
+    confidence: float                        # 置信度 (0-1)
+    gb_confidence: Optional[float]           # GB 分类器置信度
+    mask_base64: Optional[str]               # 篡改区域掩码 Base64
+    marked_image_base64: Optional[str]       # 原图标记篡改区域图片 Base64
     tamper_regions: Optional[List[TamperRegion]]  # 篡改区域矩形坐标列表
-    algorithm: str                       # 使用的算法
-    processing_time: float               # 处理时间 (秒)
+    algorithm: str                           # 使用的算法
+    processing_time: float                   # 处理时间 (秒)
 
 
 class HealthResponse(BaseModel):
@@ -115,6 +206,7 @@ class HealthResponse(BaseModel):
     status: str
     timestamp: str
     algorithms: list
+    gb_classifier_loaded: bool
 
 
 class ErrorResponse(BaseModel):
@@ -155,7 +247,8 @@ async def root():
     return {
         "status": "0001:服务运行正常.",
         "timestamp": datetime.now().isoformat(),
-        "algorithms": ["ela", "dct", "fusion", "ml"]
+        "algorithms": ["ela", "dct", "fusion", "ml"],
+        "gb_classifier_loaded": gb_model is not None
     }
 
 
@@ -165,17 +258,24 @@ async def health():
     return {
         "status": "0001:服务运行正常.",
         "timestamp": datetime.now().isoformat(),
-        "algorithms": ["ela", "dct", "fusion", "ml"]
+        "algorithms": ["ela", "dct", "fusion", "ml"],
+        "gb_classifier_loaded": gb_model is not None
     }
 
 
 @app.post("/tamper_detection/v1/tamper_detect_img")
 async def tamper_detect_img(
     image_base64: str = Form(default="", description="图片 Base64 编码"),
-    algorithm: str = Form(default="ml", description="算法名称: ela/dct/fusion/ml")
+    algorithm: str = Form(default="ml", description="算法名称: ela/dct/fusion/ml"),
+    skip_gb: bool = Form(default=False, description="跳过GB前置检测")
 ):
     """
     检测图片是否篡改
+    
+    流程:
+    1. GB 分类器判断是否篡改 (前置检测)
+    2. 如果篡改，使用指定算法定位区域
+    3. 如果正常，直接返回不进行区域定位
     
     - **image_base64**: 图片 Base64 编码，支持带或不带 data URI 前缀
     - **algorithm**: 算法名称
@@ -183,9 +283,8 @@ async def tamper_detect_img(
         - dct: DCT 单特征检测
         - fusion: 多特征融合检测
         - ml: 机器学习串联检测 (推荐)
+    - **skip_gb**: 跳过 GB 前置检测，直接进行区域定位
     """
-    import time
-    
     start_time = time.time()
     
     # 检查参数是否为空
@@ -236,26 +335,57 @@ async def tamper_detect_img(
                 }
             )
         
-        # 保存临时文件 (ML 检测器需要文件路径)
+        # 保存临时文件
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
             cv2.imwrite(tmp.name, image)
             tmp_path = tmp.name
         
         try:
-            # 根据算法调用不同检测器
+            result = {
+                "is_tampered": False,
+                "confidence": 0.0,
+                "gb_confidence": None,
+                "mask_base64": None,
+                "marked_image_base64": None,
+                "tamper_regions": None,
+                "algorithm": algorithm,
+                "processing_time": 0.0,
+                "status": "0001:解析成功."
+            }
+            
+            # 1. GB 分类器前置检测
+            if not skip_gb:
+                gb_result = gb_classify(tmp_path)
+                result['gb_confidence'] = gb_result['confidence']
+                
+                # 如果 GB 判断为正常，直接返回
+                if not gb_result['is_tampered']:
+                    result['is_tampered'] = False
+                    result['confidence'] = gb_result['confidence']
+                    result['processing_time'] = time.time() - start_time
+                    return result
+            
+            # 2. 如果篡改，进行区域定位
             if algorithm == 'ml':
-                result = _detect_with_ml(tmp_path, image)
+                detect_result = _detect_with_ml(tmp_path, image)
             elif algorithm == 'ela':
-                result = _detect_with_ela(image)
+                detect_result = _detect_with_ela(image)
             elif algorithm == 'dct':
-                result = _detect_with_dct(image)
+                detect_result = _detect_with_dct(image)
             elif algorithm == 'fusion':
-                result = _detect_with_fusion(image)
+                detect_result = _detect_with_fusion(image)
+            else:
+                detect_result = {'is_tampered': True, 'confidence': 1.0, 'mask': None}
+            
+            # 合并结果
+            result['is_tampered'] = detect_result['is_tampered']
+            result['confidence'] = detect_result['confidence']
+            result['mask_base64'] = detect_result.get('mask_base64')
+            result['marked_image_base64'] = detect_result.get('marked_image_base64')
+            result['tamper_regions'] = detect_result.get('tamper_regions')
             
             # 计算处理时间
             result['processing_time'] = time.time() - start_time
-            result['algorithm'] = algorithm
-            result['status'] = "0001:解析成功."
             
             return result
         
@@ -475,5 +605,8 @@ def _create_marked_image(image: np.ndarray, mask: np.ndarray) -> Optional[str]:
 
 
 if __name__ == '__main__':
+    # 启动时加载 GB 分类器
+    load_gb_classifier()
+    
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
