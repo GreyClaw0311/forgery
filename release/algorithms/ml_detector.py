@@ -166,7 +166,8 @@ class MLDetector:
                 if features is not None and self.gb_scaler is not None:
                     features_scaled = self.gb_scaler.transform([features])
                     proba = self.gb_model.predict_proba(features_scaled)[0, 1]
-                    result['is_tampered'] = proba > 0.5
+                    # 转换为 Python 原生类型，避免 FastAPI 序列化错误
+                    result['is_tampered'] = bool(proba > 0.5)
                     result['confidence'] = float(proba)
                 else:
                     result['is_tampered'] = True
