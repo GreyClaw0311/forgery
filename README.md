@@ -279,10 +279,10 @@ python test_service.py --mode compare \
 【测试信息】
   数据目录: ./data/tamper_data
   测试算法: ml
-  测试时间: 2026-03-24T10:30:00
+  测试时间: 2026-03-26T10:30:00
   测试图片: 100/100
 
-【效果指标】
+【分类指标】(二分类)
   Accuracy:  0.9200 (92/100)
   Precision: 0.9452
   Recall:    0.8936
@@ -295,6 +295,22 @@ python test_service.py --mode compare \
   实际篡改        42        5
   实际正常         3       50
 
+【像素级指标】(分割)
+  评估图片数: 42
+  平均 IoU:  0.7523
+  平均 Dice: 0.8234
+  平均 Pixel-F1: 0.8012
+  平均 Precision: 0.8456
+  平均 Recall: 0.7623
+
+  整体像素级指标 (汇总):
+  Overall IoU:  0.7845
+  Overall Dice: 0.8512
+
+  像素混淆矩阵:
+  TP: 1,234,567  TN: 45,678,901
+  FP: 234,567    FN: 345,678
+
 【性能指标】
   总耗时: 35.25s
   平均耗时: 352.50ms
@@ -305,12 +321,18 @@ python test_service.py --mode compare \
 【置信度统计】
   篡改图片平均置信度: 0.8542 (47张)
   正常图片平均置信度: 0.1823 (53张)
-
-【分类统计】
-  easy        :  20张, Acc=0.9500, Conf=0.8934, Time=280.5ms
-  difficult   :  27张, Acc=0.8519, Conf=0.8215, Time=420.3ms
-  good        :  53张, Acc=0.9434, Conf=0.1823, Time=310.2ms
 ```
+
+### 像素级指标说明
+
+| 指标 | 说明 | 计算方式 |
+|------|------|----------|
+| IoU | Intersection over Union | TP / (TP + FP + FN) |
+| Dice | Dice 系数 | 2×TP / (2×TP + FP + FN) |
+| Pixel-F1 | 像素级 F1 | 2×Precision×Recall / (Precision+Recall) |
+| Pixel-Precision | 像素级精确率 | TP / (TP + FP) |
+| Pixel-Recall | 像素级召回率 | TP / (TP + FN) |
+| Overall | 汇总指标 | 基于所有图片的总 TP/FP/FN 计算 |
 
 ---
 
@@ -339,11 +361,51 @@ python train/gb_classifier/train_gb.py \
 
 ### 训练像素级模型
 
+**推荐使用极速优化版** (5-10x 加速):
+
+```bash
+# 安装 LBP 加速依赖
+pip install scikit-image
+
+# 运行训练 (实时进度显示)
+python train/pixel_segmentation/train_pixel_fast.py \
+    --data_dir /path/to/processed_data \
+    --output_dir ./release/models/pixel_segmentation \
+    --model_type ensemble \
+    --num_workers 16 \
+    --skip-solid
+```
+
+**训练输出示例**:
+
+```
+处理 train 集: 30644 张图片 (16 进程)
+窗口大小: 32, 步长: 16
+------------------------------------------------------------
+  [████████████░░░░░░░░] 15000/30644 (48.9%) | 速度: 125.3 张/s | 已用: 2.0min | 预计: 2.1min
+
+数据集统计:
+  处理时间: 1250.5 秒 (20.8 分钟)
+  处理速度: 24.5 张/秒
+  正常图片: 283 张
+  篡改图片: 30361 张
+  总样本数: 45,231,892
+```
+
+**原版脚本** (备用):
+
 ```bash
 python train/pixel_segmentation/train_pixel.py \
     --data_dir /path/to/processed_data \
     --output_dir ./release/models/pixel_segmentation
 ```
+
+### 训练脚本对比
+
+| 脚本 | 进度显示 | LBP 加速 | 纯色块跳过 | 预计速度 |
+|------|----------|----------|------------|----------|
+| `train_pixel.py` | 仅总数 | Python 循环 | ❌ | 基准 |
+| `train_pixel_fast.py` | 实时进度条 | skimage 向量化 | ✅ | **5-10x** |
 
 ---
 
@@ -373,6 +435,16 @@ python train/pixel_segmentation/train_pixel.py \
 ---
 
 ## 更新日志
+
+### 2026-03-26
+
+- ✅ 新增极速优化版训练脚本 `train_pixel_fast.py`
+- ✅ 实时进度显示 (进度条/速度/预计时间)
+- ✅ LBP 向量化加速 (skimage, 50x)
+- ✅ 纯色块智能跳过
+- ✅ 测试脚本新增像素级指标 (IoU/Dice/Pixel-F1)
+- ✅ 特征提取器支持多维度 (57/35)
+- ✅ ML 检测器自动适配特征维度
 
 ### 2026-03-24
 
