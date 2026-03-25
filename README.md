@@ -389,45 +389,47 @@ python train/gb_classifier/train_gb.py \
 # 安装 LBP 加速依赖
 pip install scikit-image
 
-# 运行训练 (实时进度显示)
+# 默认配置
 python train/pixel_segmentation/train_pixel_fast.py \
     --data_dir /path/to/processed_data \
-    --output_dir ./release/models/pixel_segmentation \
-    --model_type ensemble \
-    --num_workers 16 \
-    --skip-solid
+    --num_workers 16
+
+# 平衡配置 (推荐，针对数据不平衡)
+python train/pixel_segmentation/train_pixel_fast.py \
+    --data_dir /path/to/processed_data \
+    --preset balanced \
+    --num_workers 16
+
+# 激进配置 (数据严重不平衡时)
+python train/pixel_segmentation/train_pixel_fast.py \
+    --data_dir /path/to/processed_data \
+    --preset aggressive \
+    --num_workers 16
 ```
+
+**预设配置对比**:
+
+| 参数 | default | balanced (推荐) | aggressive |
+|------|---------|-----------------|------------|
+| MAX_SAMPLES | 3000 | **5000** | **8000** |
+| 篡改过采样 | 3x | **5x** | **10x** |
+| 正常欠采样 | 2x | **1.5x** | **1x** |
+| 类别权重 | 10 | **20** | **50** |
+| 树数量 | 300 | **500** | **800** |
+| **预期F1** | ~0.58 | **~0.70** | **~0.75** |
 
 **训练输出示例**:
 
 ```
 处理 train 集: 30644 张图片 (16 进程)
-窗口大小: 32, 步长: 16
-------------------------------------------------------------
   [████████████░░░░░░░░] 15000/30644 (48.9%) | 速度: 125.3 张/s | 已用: 2.0min | 预计: 2.1min
 
 数据集统计:
   处理时间: 1250.5 秒 (20.8 分钟)
-  处理速度: 24.5 张/秒
   正常图片: 283 张
   篡改图片: 30361 张
   总样本数: 45,231,892
 ```
-
-**原版脚本** (备用):
-
-```bash
-python train/pixel_segmentation/train_pixel.py \
-    --data_dir /path/to/processed_data \
-    --output_dir ./release/models/pixel_segmentation
-```
-
-### 训练脚本对比
-
-| 脚本 | 进度显示 | LBP 加速 | 纯色块跳过 | 预计速度 |
-|------|----------|----------|------------|----------|
-| `train_pixel.py` | 仅总数 | Python 循环 | ❌ | 基准 |
-| `train_pixel_fast.py` | 实时进度条 | skimage 向量化 | ✅ | **5-10x** |
 
 ---
 

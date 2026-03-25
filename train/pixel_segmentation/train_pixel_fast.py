@@ -8,11 +8,17 @@
 3. percentile 合并计算 (减少排序次数)
 4. imap_unordered 批处理 (减少内存占用)
 5. 纯色块跳过 (智能采样)
-6. 特征提取向量化
+6. 预设配置 (针对数据不平衡优化)
 
-预期提升:
-- 构建数据集速度: 5-10x
-- 内存占用: 降低 50%
+使用方法:
+# 默认配置
+python train_pixel_fast.py --data_dir /path/to/data
+
+# 平衡配置 (推荐，针对数据不平衡)
+python train_pixel_fast.py --data_dir /path/to/data --preset balanced
+
+# 激进配置 (数据严重不平衡时)
+python train_pixel_fast.py --data_dir /path/to/data --preset aggressive
 """
 
 import os
@@ -63,6 +69,46 @@ except ImportError:
     HAS_XGB = False
 
 
+# ============== 预设配置 ==============
+PRESETS = {
+    # 默认配置
+    'default': {
+        'MAX_SAMPLES_PER_IMAGE': 3000,
+        'TAMPER_OVERSAMPLE_RATIO': 3,
+        'NORMAL_UNDERSAMPLE_RATIO': 2,
+        'SCALE_POS_WEIGHT': 10,
+        'N_ESTIMATORS': 300,
+        'LEARNING_RATE': 0.05,
+        'NUM_LEAVES': 63,
+        'MAX_DEPTH': -1,
+    },
+    
+    # 平衡配置 (推荐，针对数据不平衡)
+    'balanced': {
+        'MAX_SAMPLES_PER_IMAGE': 5000,      # 增加采样
+        'TAMPER_OVERSAMPLE_RATIO': 5,      # 更多篡改样本
+        'NORMAL_UNDERSAMPLE_RATIO': 1.5,   # 减少正常样本
+        'SCALE_POS_WEIGHT': 20,            # 更大类别权重
+        'N_ESTIMATORS': 500,               # 更多树
+        'LEARNING_RATE': 0.03,             # 更小学习率
+        'NUM_LEAVES': 127,                 # 更复杂模型
+        'MAX_DEPTH': 12,
+    },
+    
+    # 激进配置 (数据严重不平衡时)
+    'aggressive': {
+        'MAX_SAMPLES_PER_IMAGE': 8000,
+        'TAMPER_OVERSAMPLE_RATIO': 10,     # 大幅过采样篡改
+        'NORMAL_UNDERSAMPLE_RATIO': 1,     # 最小正常样本
+        'SCALE_POS_WEIGHT': 50,            # 大类别权重
+        'N_ESTIMATORS': 800,
+        'LEARNING_RATE': 0.02,
+        'NUM_LEAVES': 255,
+        'MAX_DEPTH': 15,
+    },
+}
+
+
 # ============== 配置 ==============
 class Config:
     """训练配置"""
@@ -82,40 +128,60 @@ class Config:
     MODEL_TYPE = 'lgb'
     N_ESTIMATORS = 300
     
-    # LightGBM参数
-    LGB_PARAMS = {
-        'objective': 'binary',
-        'metric': 'binary_logloss',
-        'boosting_type': 'gbdt',
-        'num_leaves': 63,
-        'learning_rate': 0.05,
-        'feature_fraction': 0.8,
-        'bagging_fraction': 0.8,
-        'bagging_freq': 5,
-        'verbose': -1,
-        'n_jobs': -1,
-        'scale_pos_weight': 10,
-    }
-    
-    # XGBoost参数
-    XGB_PARAMS = {
-        'objective': 'binary:logistic',
-        'eval_metric': 'logloss',
-        'max_depth': 8,
-        'learning_rate': 0.05,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
-        'n_jobs': -1,
-        'scale_pos_weight': 10,
-    }
-    
     # 训练参数
     TEST_SIZE = 0.2
     RANDOM_STATE = 42
     
     # 优化参数
-    SKIP_SOLID_BLOCKS = True  # 跳过纯色块
-    SOLID_THRESHOLD = 5.0     # 纯色块方差阈值
+    SKIP_SOLID_BLOCKS = True
+    SOLID_THRESHOLD = 5.0
+    
+    # 动态参数 (由预设配置)
+    SCALE_POS_WEIGHT = 10
+    LEARNING_RATE = 0.05
+    NUM_LEAVES = 63
+    MAX_DEPTH = -1
+    
+    def apply_preset(self, preset_name: str):
+        """应用预设配置"""
+        if preset_name in PRESETS:
+            preset = PRESETS[preset_name]
+            for key, value in preset.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+            return True
+        return False
+    
+    def get_lgb_params(self):
+        """获取 LightGBM 参数"""
+        return {
+            'objective': 'binary',
+            'metric': 'binary_logloss',
+            'boosting_type': 'gbdt',
+            'num_leaves': self.NUM_LEAVES,
+            'learning_rate': self.LEARNING_RATE,
+            'max_depth': self.MAX_DEPTH,
+            'feature_fraction': 0.8,
+            'bagging_fraction': 0.8,
+            'bagging_freq': 5,
+            'verbose': -1,
+            'n_jobs': -1,
+            'scale_pos_weight': self.SCALE_POS_WEIGHT,
+            'is_unbalance': True,
+        }
+    
+    def get_xgb_params(self):
+        """获取 XGBoost 参数"""
+        return {
+            'objective': 'binary:logistic',
+            'eval_metric': 'logloss',
+            'max_depth': self.MAX_DEPTH if self.MAX_DEPTH > 0 else 10,
+            'learning_rate': self.LEARNING_RATE,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'n_jobs': -1,
+            'scale_pos_weight': self.SCALE_POS_WEIGHT,
+        }
 
 
 # ============== 快速特征提取器 ==============
@@ -134,26 +200,22 @@ class FastFeatureExtractor:
             gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
         else:
             gray = patch
-        
-        # 快速方差计算
         return np.std(gray) < self.solid_threshold
     
     def extract(self, patch: np.ndarray) -> np.ndarray:
         """提取特征 (57维) - 优化版"""
         features = []
         
-        # 转换灰度图
         if len(patch.shape) == 3:
             gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
         else:
             gray = patch
         gray = gray.astype(np.float32)
         
-        # ========== 1. DCT特征 (8个) ==========
+        # 1. DCT特征 (8个)
         dct = cv2.dct(gray)
         dct_low = dct[:8, :8]
         dct_high = dct[8:, 8:]
-        
         dct_low_abs = np.abs(dct_low)
         dct_high_abs = np.abs(dct_high)
         dct_abs = np.abs(dct)
@@ -167,27 +229,23 @@ class FastFeatureExtractor:
         features.append(np.max(dct_low_abs))
         features.append(np.sum(dct_high_abs) / (np.sum(dct_abs) + 1e-8))
         
-        # ========== 2. ELA特征 (4个) - 主要瓶颈 ==========
+        # 2. ELA特征 (4个)
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
         _, encoded = cv2.imencode('.jpg', patch, encode_param)
         decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
         ela = np.abs(patch.astype(np.float32) - decoded.astype(np.float32))
         ela_flat = ela.flatten()
-        
-        # 合并 percentile 计算
         ela_p95 = np.percentile(ela_flat, 95)
         features.append(np.mean(ela_flat))
         features.append(np.std(ela_flat))
         features.append(ela_p95)
         features.append(np.max(ela_flat))
         
-        # ========== 3. Noise特征 (6个) ==========
+        # 3. Noise特征 (6个)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         noise = gray - blurred
         noise_abs = np.abs(noise)
         noise_flat = noise_abs.flatten()
-        
-        # 合并 percentile 计算
         noise_p95, noise_p99 = np.percentile(noise_flat, [95, 99])
         features.append(np.mean(noise_abs))
         features.append(np.std(noise))
@@ -196,7 +254,7 @@ class FastFeatureExtractor:
         features.append(noise_p99)
         features.append(np.median(noise_abs))
         
-        # ========== 4. Edge特征 (6个) ==========
+        # 4. Edge特征 (6个)
         edges = cv2.Canny(gray.astype(np.uint8), 50, 150)
         sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
@@ -209,7 +267,7 @@ class FastFeatureExtractor:
         features.append(np.percentile(mag, 95))
         features.append(np.sum(mag > np.percentile(mag, 90)) / mag.size)
         
-        # ========== 5. 纹理特征 (8个) ==========
+        # 5. 纹理特征 (8个)
         diff_h = np.abs(gray[:, 1:] - gray[:, :-1])
         diff_v = np.abs(gray[1:, :] - gray[:-1, :])
         
@@ -222,7 +280,7 @@ class FastFeatureExtractor:
         features.append(np.percentile(np.abs(gray[1:, 1:] - gray[:-1, :-1]), 95))
         features.append(np.std(gray))
         
-        # ========== 6. Color特征 (5个) ==========
+        # 6. Color特征 (5个)
         if len(patch.shape) == 3:
             hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
             features.append(np.std(hsv[:,:,0]))
@@ -233,20 +291,16 @@ class FastFeatureExtractor:
         else:
             features.extend([0] * 5)
         
-        # ========== 7. LBP特征 (8个) - 快速实现 ==========
+        # 7. LBP特征 (8个)
         if HAS_SKIMAGE:
-            # 使用 skimage 向量化实现 (50x 加速)
             lbp = local_binary_pattern(gray.astype(np.uint8), P=8, R=1, method='uniform')
-            lbp_hist, _ = np.histogram(lbp, bins=8, range=(0, 256))
-            lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
         else:
-            # 慢速备用实现
             lbp = self._compute_lbp_slow(gray.astype(np.uint8))
-            lbp_hist, _ = np.histogram(lbp, bins=8, range=(0, 256))
-            lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
+        lbp_hist, _ = np.histogram(lbp, bins=8, range=(0, 256))
+        lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
         features.extend(lbp_hist.tolist())
         
-        # ========== 8. 频域特征 (6个) ==========
+        # 8. 频域特征 (6个)
         f = np.fft.fft2(gray)
         fshift = np.fft.fftshift(f)
         magnitude = np.abs(fshift)
@@ -264,11 +318,10 @@ class FastFeatureExtractor:
         high_freq = magnitude[high_freq_mask]
         features.append(np.mean(high_freq))
         features.append(np.std(high_freq))
-        
         features.append(np.sum(low_freq) / (np.sum(magnitude) + 1e-8))
         features.append(np.percentile(high_freq, 95))
         
-        # ========== 9. 局部对比度特征 (6个) ==========
+        # 9. 局部对比度特征 (6个)
         local_mean = cv2.blur(gray, (8, 8))
         local_var = cv2.blur((gray - local_mean)**2, (8, 8))
         
@@ -322,24 +375,31 @@ class SmartSampler:
         n_tamper = len(tampered_idx)
         n_tamper_oversample = min(
             int(n_tamper * self.config.TAMPER_OVERSAMPLE_RATIO),
-            self.config.MAX_SAMPLES_PER_IMAGE // 3
+            self.config.MAX_SAMPLES_PER_IMAGE // 2
         )
         
         if n_tamper_oversample > n_tamper:
-            oversample_idx = np.random.choice(tampered_idx, 
-                                              n_tamper_oversample - n_tamper, 
-                                              replace=True)
-            tampered_idx = np.concatenate([tampered_idx, oversample_idx])
+            oversample_times = n_tamper_oversample // n_tamper
+            oversample_remainder = n_tamper_oversample % n_tamper
+            
+            tampered_sampled = tampered_idx.copy()
+            for _ in range(oversample_times - 1):
+                tampered_sampled = np.concatenate([tampered_sampled, tampered_idx])
+            if oversample_remainder > 0:
+                extra = np.random.choice(tampered_idx, oversample_remainder, replace=False)
+                tampered_sampled = np.concatenate([tampered_sampled, extra])
+        else:
+            tampered_sampled = np.random.choice(tampered_idx, n_tamper_oversample, replace=False)
         
         # 正常像素欠采样
         n_normal = min(
-            len(tampered_idx) * self.config.NORMAL_UNDERSAMPLE_RATIO,
+            len(tampered_sampled) * self.config.NORMAL_UNDERSAMPLE_RATIO,
             len(normal_idx),
-            self.config.MAX_SAMPLES_PER_IMAGE - len(tampered_idx)
+            self.config.MAX_SAMPLES_PER_IMAGE - len(tampered_sampled)
         )
-        normal_sampled = np.random.choice(normal_idx, n_normal, replace=False)
+        normal_sampled = np.random.choice(normal_idx, int(n_normal), replace=False)
         
-        selected_idx = np.concatenate([tampered_idx, normal_sampled])
+        selected_idx = np.concatenate([tampered_sampled, normal_sampled])
         np.random.shuffle(selected_idx)
         
         return features[selected_idx], labels[selected_idx]
@@ -349,74 +409,37 @@ class SmartSampler:
 class ProgressTracker:
     """实时进度追踪"""
     
-    def __init__(self, total: int, update_interval: int = 100):
+    def __init__(self, total: int):
         self.total = total
-        self.count = mp.Value('i', 0)
-        self.start_time = mp.Value('d', time.time())
-        self.update_interval = update_interval
+        self.start_time = time.time()
     
-    def update(self, n: int = 1):
-        """更新计数"""
-        with self.count.get_lock():
-            self.count.value += n
-    
-    def get_progress(self) -> dict:
-        """获取当前进度"""
-        with self.count.get_lock():
-            count = self.count.value
-        
-        elapsed = time.time() - self.start_time.value
-        speed = count / elapsed if elapsed > 0 else 0
-        eta = (self.total - count) / speed if speed > 0 else 0
-        
-        return {
-            'completed': count,
-            'total': self.total,
-            'percent': count / self.total * 100 if self.total > 0 else 0,
-            'speed': speed,
-            'elapsed': elapsed,
-            'eta': eta
-        }
-    
-    def print_progress(self, completed: int, total: int, elapsed: float):
+    def print_progress(self, completed: int):
         """打印进度"""
+        elapsed = time.time() - self.start_time
         speed = completed / elapsed if elapsed > 0 else 0
-        eta = (total - completed) / speed if speed > 0 else 0
+        eta = (self.total - completed) / speed if speed > 0 else 0
         
-        # 格式化时间
-        elapsed_str = self._format_time(elapsed)
-        eta_str = self._format_time(eta)
-        
-        # 进度条
         bar_length = 30
-        filled = int(bar_length * completed / total) if total > 0 else 0
+        filled = int(bar_length * completed / self.total) if self.total > 0 else 0
         bar = '█' * filled + '░' * (bar_length - filled)
         
-        print(f"\r  [{bar}] {completed}/{total} ({completed/total*100:.1f}%) | "
+        elapsed_str = f"{elapsed/60:.1f}min" if elapsed < 3600 else f"{elapsed/3600:.1f}h"
+        eta_str = f"{eta/60:.1f}min" if eta < 3600 else f"{eta/3600:.1f}h"
+        
+        print(f"\r  [{bar}] {completed}/{self.total} ({completed/self.total*100:.1f}%) | "
               f"速度: {speed:.1f} 张/s | 已用: {elapsed_str} | 预计: {eta_str}", end='', flush=True)
-    
-    def _format_time(self, seconds: float) -> str:
-        """格式化时间"""
-        if seconds < 60:
-            return f"{seconds:.0f}s"
-        elif seconds < 3600:
-            return f"{seconds/60:.1f}min"
-        else:
-            return f"{seconds/3600:.1f}h"
 
 
 def process_single_image_worker(args):
     """工作进程处理单张图片"""
     image_path, mask_path, config_dict, skip_solid, solid_threshold = args
     
-    # 重建配置
     window_size = config_dict['window_size']
     stride = config_dict['stride']
     max_samples = config_dict['max_samples']
     tamper_ratio = config_dict['tamper_ratio']
     normal_ratio = config_dict['normal_ratio']
     
-    # 创建提取器
     extractor = FastFeatureExtractor(window_size, skip_solid, solid_threshold)
     sampler = SmartSampler.__new__(SmartSampler)
     sampler.config = type('Config', (), {
@@ -425,14 +448,11 @@ def process_single_image_worker(args):
         'NORMAL_UNDERSAMPLE_RATIO': normal_ratio
     })()
     
-    # 读取图片
     image = cv2.imread(image_path)
     if image is None:
         return None, None, False
     
     h, w = image.shape[:2]
-    
-    # 读取 mask
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
     if mask is None:
         return None, None, False
@@ -450,11 +470,8 @@ def process_single_image_worker(args):
             patch = image[y-half:y+half, x-half:x+half]
             if patch.shape[0] != window_size or patch.shape[1] != window_size:
                 continue
-            
-            # 跳过纯色块
             if skip_solid and extractor.is_solid_block(patch):
                 continue
-            
             feat = extractor.extract(patch)
             features_list.append(feat)
             labels_list.append(labels[y, x])
@@ -464,11 +481,8 @@ def process_single_image_worker(args):
     
     features = np.array(features_list)
     labels_arr = np.array(labels_list)
-    
-    # 智能采样
     features, labels_arr = sampler.sample(features, labels_arr)
     
-    # 判断是否为篡改图片
     is_tampered = np.sum(labels_arr) > 0
     
     return features, labels_arr, is_tampered
@@ -481,9 +495,7 @@ class FastDatasetBuilder:
     def __init__(self, config: Config):
         self.config = config
     
-    def build_dataset(self, data_dir: str, split: str = 'train', 
-                      num_workers: int = 8) -> Tuple[np.ndarray, np.ndarray]:
-        """构建数据集 (带实时进度)"""
+    def build_dataset(self, data_dir: str, split: str = 'train', num_workers: int = 8):
         data_dir = Path(data_dir)
         images_dir = data_dir / split / 'images'
         masks_dir = data_dir / split / 'masks'
@@ -492,10 +504,12 @@ class FastDatasetBuilder:
             print(f"错误: 目录不存在 {images_dir}")
             return None, None
         
-        # 收集任务
         image_files = list(images_dir.glob('*.jpg'))
         print(f"\n处理 {split} 集: {len(image_files)} 张图片 ({num_workers} 进程)")
-        print(f"窗口大小: {self.config.WINDOW_SIZE}, 步长: {self.config.STRIDE}")
+        print(f"窗口: {self.config.WINDOW_SIZE}, 步长: {self.config.STRIDE}")
+        print(f"采样: MAX={self.config.MAX_SAMPLES_PER_IMAGE}, "
+              f"篡改过采样={self.config.TAMPER_OVERSAMPLE_RATIO}x, "
+              f"正常欠采样={self.config.NORMAL_UNDERSAMPLE_RATIO}x")
         print("-" * 60)
         
         tasks = []
@@ -504,8 +518,7 @@ class FastDatasetBuilder:
             mask_file = masks_dir / mask_name
             if mask_file.exists():
                 tasks.append((
-                    str(img_file), 
-                    str(mask_file),
+                    str(img_file), str(mask_file),
                     {
                         'window_size': self.config.WINDOW_SIZE,
                         'stride': self.config.STRIDE,
@@ -517,18 +530,13 @@ class FastDatasetBuilder:
                     self.config.SOLID_THRESHOLD
                 ))
         
-        # 进度追踪
         tracker = ProgressTracker(len(tasks))
-        
-        # 结果收集
         all_features = []
         all_labels = []
         normal_count = 0
         tampered_count = 0
         
-        # 多进程处理
         start_time = time.time()
-        last_update_time = start_time
         
         with mp.Pool(num_workers) as pool:
             for i, (features, labels, is_tampered) in enumerate(
@@ -537,34 +545,28 @@ class FastDatasetBuilder:
                 if features is not None and len(features) > 0:
                     all_features.append(features)
                     all_labels.append(labels)
-                    
                     if is_tampered:
                         tampered_count += 1
                     else:
                         normal_count += 1
                 
-                # 更新进度 (每 50 张或最后一张)
-                current_time = time.time()
                 if (i + 1) % 50 == 0 or (i + 1) == len(tasks):
-                    tracker.print_progress(i + 1, len(tasks), current_time - start_time)
+                    tracker.print_progress(i + 1)
         
-        print()  # 换行
+        print()
         
         if not all_features:
             return None, None
         
-        # 合并数据
         print("\n合并数据集...")
         X = np.vstack(all_features)
         y = np.concatenate(all_labels)
         
-        # 统计
         total_time = time.time() - start_time
         print(f"\n{'='*60}")
         print("数据集统计:")
         print(f"{'='*60}")
-        print(f"  处理时间: {total_time:.1f} 秒 ({total_time/60:.1f} 分钟)")
-        print(f"  处理速度: {len(tasks)/total_time:.2f} 张/秒")
+        print(f"  处理时间: {total_time:.1f}秒 ({total_time/60:.1f}分钟)")
         print(f"  正常图片: {normal_count} 张")
         print(f"  篡改图片: {tampered_count} 张")
         print(f"  总样本数: {len(X):,}")
@@ -594,20 +596,20 @@ class ModelTrainer:
             print("使用 LightGBM 模型")
             return lgb.LGBMClassifier(
                 n_estimators=self.config.N_ESTIMATORS,
-                **self.config.LGB_PARAMS
+                **self.config.get_lgb_params()
             )
         
         elif model_type == 'xgb' and HAS_XGB:
             print("使用 XGBoost 模型")
             return xgb.XGBClassifier(
                 n_estimators=self.config.N_ESTIMATORS,
-                **self.config.XGB_PARAMS
+                **self.config.get_xgb_params()
             )
         
         elif model_type == 'ensemble' and HAS_LGB and HAS_XGB:
             print("使用集成模型 (LightGBM + XGBoost + RF)")
-            lgb_model = lgb.LGBMClassifier(n_estimators=200, **self.config.LGB_PARAMS)
-            xgb_model = xgb.XGBClassifier(n_estimators=200, **self.config.XGB_PARAMS)
+            lgb_model = lgb.LGBMClassifier(n_estimators=200, **self.config.get_lgb_params())
+            xgb_model = xgb.XGBClassifier(n_estimators=200, **self.config.get_xgb_params())
             rf_model = RandomForestClassifier(
                 n_estimators=200, max_depth=20, n_jobs=-1, class_weight='balanced'
             )
@@ -650,9 +652,7 @@ class ModelTrainer:
         
         print("\n训练模型...")
         start_time = datetime.now()
-        
         self.model.fit(X_train, y_train)
-        
         train_time = (datetime.now() - start_time).total_seconds()
         print(f"训练耗时: {train_time:.1f} 秒")
         
@@ -672,7 +672,7 @@ class ModelTrainer:
             best_f1 = 0
             best_thresh = 0.5
             
-            for thresh in np.arange(0.3, 0.8, 0.02):
+            for thresh in np.arange(0.2, 0.9, 0.02):
                 pred = (y_proba > thresh).astype(int)
                 f1 = f1_score(y_val, pred)
                 if f1 > best_f1:
@@ -680,7 +680,6 @@ class ModelTrainer:
                     best_thresh = thresh
             
             self.best_threshold = best_thresh
-            
             y_pred = (y_proba > self.best_threshold).astype(int)
             
             precision = precision_score(y_val, y_pred)
@@ -778,7 +777,6 @@ class ModelTrainer:
         with open(report_path, 'w') as f:
             f.write("特征重要性报告\n")
             f.write("=" * 50 + "\n\n")
-            
             for i, (name, importance) in enumerate(importance_data, 1):
                 f.write(f"{i:2d}. {name:25s} {importance*100:.2f}%\n")
         
@@ -790,27 +788,23 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='图像篡改像素级分割训练 - 极速优化版')
-    parser.add_argument('--data-dir', type=str, required=True,
-                        help='数据目录')
-    parser.add_argument('--output-dir', type=str, default='./release/models/pixel_segmentation',
-                        help='输出目录')
+    parser.add_argument('--data-dir', type=str, required=True, help='数据目录')
+    parser.add_argument('--output-dir', type=str, default='./release/models/pixel_segmentation')
+    parser.add_argument('--preset', type=str, default='default',
+                        choices=['default', 'balanced', 'aggressive'],
+                        help='参数预设: default(默认)/balanced(推荐)/aggressive(激进)')
     parser.add_argument('--model-type', type=str, default='lgb',
-                        choices=['rf', 'lgb', 'xgb', 'ensemble'],
-                        help='模型类型')
-    parser.add_argument('--window-size', type=int, default=32,
-                        help='滑动窗口大小')
-    parser.add_argument('--stride', type=int, default=16,
-                        help='滑动步长')
-    parser.add_argument('--num-workers', type=int, default=8,
-                        help='多进程数量')
-    parser.add_argument('--skip-solid', action='store_true', default=True,
-                        help='跳过纯色块 (加速)')
-    parser.add_argument('--no-skip-solid', action='store_false', dest='skip_solid',
-                        help='不跳过纯色块')
+                        choices=['rf', 'lgb', 'xgb', 'ensemble'])
+    parser.add_argument('--window-size', type=int, default=32)
+    parser.add_argument('--stride', type=int, default=16)
+    parser.add_argument('--num-workers', type=int, default=8)
+    parser.add_argument('--skip-solid', action='store_true', default=True)
+    parser.add_argument('--no-skip-solid', action='store_false', dest='skip_solid')
     
     args = parser.parse_args()
     
     config = Config()
+    config.apply_preset(args.preset)
     config.WINDOW_SIZE = args.window_size
     config.STRIDE = args.stride
     config.MODEL_TYPE = args.model_type
@@ -821,12 +815,15 @@ def main():
     print("=" * 60)
     print(f"数据目录: {args.data_dir}")
     print(f"输出目录: {args.output_dir}")
+    print(f"预设: {args.preset}")
     print(f"模型类型: {config.MODEL_TYPE}")
-    print(f"窗口大小: {config.WINDOW_SIZE}")
-    print(f"滑动步长: {config.STRIDE}")
+    print(f"窗口/步长: {config.WINDOW_SIZE}/{config.STRIDE}")
+    print(f"采样: MAX={config.MAX_SAMPLES_PER_IMAGE}, "
+          f"篡改={config.TAMPER_OVERSAMPLE_RATIO}x, "
+          f"正常={config.NORMAL_UNDERSAMPLE_RATIO}x")
+    print(f"类别权重: {config.SCALE_POS_WEIGHT}")
     print(f"进程数: {args.num_workers}")
-    print(f"跳过纯色块: {config.SKIP_SOLID_BLOCKS}")
-    print(f"skimage 可用: {HAS_SKIMAGE}")
+    print(f"skimage: {HAS_SKIMAGE}")
     
     print("\n[1/2] 构建数据集...")
     builder = FastDatasetBuilder(config)
@@ -843,12 +840,12 @@ def main():
     trainer.save(args.output_dir)
     
     results['timestamp'] = datetime.now().isoformat()
+    results['preset'] = args.preset
     results['config'] = {
         'window_size': config.WINDOW_SIZE,
         'stride': config.STRIDE,
         'model_type': config.MODEL_TYPE,
         'feature_dim': config.FEATURE_DIM,
-        'skip_solid_blocks': config.SKIP_SOLID_BLOCKS
     }
     
     results_file = Path(args.output_dir) / 'results.json'
