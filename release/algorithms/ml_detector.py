@@ -93,9 +93,17 @@ class MLDetector:
             self.pixel_model = data.get('model')
             self.pixel_scaler = data.get('scaler')
             self.pixel_threshold = data.get('threshold', 0.5)
-            print(f"像素级模型已加载: {model_path}")
+            
+            # 自动检测特征维度
+            if self.pixel_scaler is not None:
+                self.pixel_feature_dim = self.pixel_scaler.n_features_in_
+                print(f"像素级模型已加载: {model_path} (特征维度: {self.pixel_feature_dim})")
+            else:
+                self.pixel_feature_dim = 57
+                print(f"像素级模型已加载: {model_path}")
         else:
             print(f"警告: 像素级模型不存在: {model_path}")
+            self.pixel_feature_dim = 57
     
     def _extract_gb_features(self, image_path: str) -> np.ndarray:
         """提取 GB 分类器所需的特征"""
@@ -130,7 +138,10 @@ class MLDetector:
     def _extract_patch_features(self, patch: np.ndarray) -> np.ndarray:
         """从图像块提取特征"""
         from algorithms.features import PixelFeatureExtractor
-        extractor = PixelFeatureExtractor(32)
+        
+        # 使用模型期望的特征维度
+        feature_dim = getattr(self, 'pixel_feature_dim', 57)
+        extractor = PixelFeatureExtractor(32, feature_dim=feature_dim)
         return extractor.extract(patch)
     
     def predict(self, image_path: str) -> Dict:
