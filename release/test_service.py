@@ -154,6 +154,85 @@ class TamperDetectionTester:
         else:
             return 1  # 篡改
     
+    def decode_mask_base64(self, mask_base64: str) -> np.ndarray:
+        """
+        解码 Base64 掩码
+        
+        Args:
+            mask_base64: Base64 编码的掩码
+            
+        Returns:
+            二值掩码 (0 或 255)
+        """
+        if not mask_base64:
+            return None
+        
+        try:
+            mask_bytes = base64.b64decode(mask_base64)
+            mask = cv2.imdecode(np.frombuffer(mask_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+            return mask
+        except Exception as e:
+            print(f"解码掩码失败: {e}")
+            return None
+    
+    def compute_pixel_metrics(self, pred_mask: np.ndarray, true_mask: np.ndarray, 
+                              threshold: int = 127) -> Dict:
+        """
+        计算像素级指标
+        
+        Args:
+            pred_mask: 预测掩码
+            true_mask: 真实掩码
+            threshold: 二值化阈值
+            
+        Returns:
+            像素级指标字典
+        """
+        # 确保尺寸一致
+        if pred_mask.shape != true_mask.shape:
+            pred_mask = cv2.resize(pred_mask, (true_mask.shape[1], true_mask.shape[0]))
+        
+        # 二值化
+        pred_binary = (pred_mask > threshold).astype(np.uint8)
+        true_binary = (true_mask > threshold).astype(np.uint8)
+        
+        # 计算混淆矩阵
+        tp = int(np.sum((pred_binary == 1) & (true_binary == 1)))
+        tn = int(np.sum((pred_binary == 0) & (true_binary == 0)))
+        fp = int(np.sum((pred_binary == 1) & (true_binary == 0)))
+        fn = int(np.sum((pred_binary == 0) & (true_binary == 1)))
+        
+        # 计算 IoU
+        intersection = tp
+        union = tp + fp + fn
+        iou = intersection / union if union > 0 else 0.0
+        
+        # 计算 Dice (F1)
+        dice = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+        
+        # 计算像素级 Precision/Recall
+        pixel_precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        pixel_recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        pixel_f1 = 2 * pixel_precision * pixel_recall / (pixel_precision + pixel_recall) \
+            if (pixel_precision + pixel_recall) > 0 else 0.0
+        
+        # 计算像素准确率
+        total_pixels = tp + tn + fp + fn
+        pixel_accuracy = (tp + tn) / total_pixels if total_pixels > 0 else 0.0
+        
+        return {
+            'iou': round(iou, 4),
+            'dice': round(dice, 4),
+            'pixel_precision': round(pixel_precision, 4),
+            'pixel_recall': round(pixel_recall, 4),
+            'pixel_f1': round(pixel_f1, 4),
+            'pixel_accuracy': round(pixel_accuracy, 4),
+            'tp': tp,
+            'tn': tn,
+            'fp': fp,
+            'fn': fn
+        }
+    
     def save_result_image(self, image_path: str, result: Dict, output_path: str, 
                           true_label: int = None, mask_path: str = None) -> bool:
         """
@@ -381,6 +460,9 @@ class TamperDetectionTester:
         # 时间统计
         processing_times = []
         
+        # 像素级指标统计 (仅对篡改图片)
+        pixel_metrics_list = []
+        
         for i, item in enumerate(test_images):
             image_path = item['path']
             mask_path = item['mask_path']
@@ -417,6 +499,16 @@ class TamperDetectionTester:
                     else:
                         fp += 1
                 
+                # 计算像素级指标 (仅对篡改图片且有预测掩码)
+                pixel_metrics = None
+                if true_label == 1 and mask_path and result.get('mask_base64'):
+                    true_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                    pred_mask = self.decode_mask_base64(result['mask_base64'])
+                    
+                    if true_mask is not None and pred_mask is not None:
+                        pixel_metrics = self.compute_pixel_metrics(pred_mask, true_mask)
+                        pixel_metrics_list.append(pixel_metrics)
+                
                 # 保存图片
                 if save_images:
                     image_name = os.path.basename(image_path)
@@ -432,7 +524,8 @@ class TamperDetectionTester:
                     'confidence': confidence,
                     'gb_confidence': gb_confidence,
                     'processing_time': processing_time,
-                    'request_time': request_time
+                    'request_time': request_time,
+                    'pixel_metrics': pixel_metrics
                 })
             else:
                 # 检测失败
@@ -452,7 +545,7 @@ class TamperDetectionTester:
             if (i + 1) % 10 == 0 or (i + 1) == len(test_images):
                 print(f"  进度: {i+1}/{len(test_images)} ({(i+1)/len(test_images)*100:.1f}%)")
         
-        # 计算指标
+        # 计算分类指标
         accuracy = correct / total if total > 0 else 0
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -464,6 +557,36 @@ class TamperDetectionTester:
         avg_processing_time = np.mean(processing_times) if processing_times else 0
         avg_tampered_conf = np.mean(tampered_confidences) if tampered_confidences else 0
         avg_normal_conf = np.mean(normal_confidences) if normal_confidences else 0
+        
+        # 计算像素级指标平均值
+        pixel_metrics_summary = None
+        if pixel_metrics_list:
+            pixel_metrics_summary = {
+                'avg_iou': round(np.mean([m['iou'] for m in pixel_metrics_list]), 4),
+                'avg_dice': round(np.mean([m['dice'] for m in pixel_metrics_list]), 4),
+                'avg_pixel_precision': round(np.mean([m['pixel_precision'] for m in pixel_metrics_list]), 4),
+                'avg_pixel_recall': round(np.mean([m['pixel_recall'] for m in pixel_metrics_list]), 4),
+                'avg_pixel_f1': round(np.mean([m['pixel_f1'] for m in pixel_metrics_list]), 4),
+                'avg_pixel_accuracy': round(np.mean([m['pixel_accuracy'] for m in pixel_metrics_list]), 4),
+                'total_tp': sum(m['tp'] for m in pixel_metrics_list),
+                'total_tn': sum(m['tn'] for m in pixel_metrics_list),
+                'total_fp': sum(m['fp'] for m in pixel_metrics_list),
+                'total_fn': sum(m['fn'] for m in pixel_metrics_list),
+                'evaluated_images': len(pixel_metrics_list)
+            }
+            
+            # 计算整体像素级指标 (基于汇总的 TP/TN/FP/FN)
+            total_tp = pixel_metrics_summary['total_tp']
+            total_tn = pixel_metrics_summary['total_tn']
+            total_fp = pixel_metrics_summary['total_fp']
+            total_fn = pixel_metrics_summary['total_fn']
+            
+            pixel_metrics_summary['overall_iou'] = round(
+                total_tp / (total_tp + total_fp + total_fn) if (total_tp + total_fp + total_fn) > 0 else 0, 4
+            )
+            pixel_metrics_summary['overall_dice'] = round(
+                2 * total_tp / (2 * total_tp + total_fp + total_fn) if (2 * total_tp + total_fp + total_fn) > 0 else 0, 4
+            )
         
         # 生成报告
         report = {
@@ -486,7 +609,7 @@ class TamperDetectionTester:
                 'p95_time': round(np.percentile(processing_times, 95), 4) if processing_times else 0,
                 'fps': round(total / total_time, 2) if total_time > 0 else 0
             },
-            'effectiveness': {
+            'classification_metrics': {
                 'accuracy': round(accuracy, 4),
                 'precision': round(precision, 4),
                 'recall': round(recall, 4),
@@ -498,6 +621,7 @@ class TamperDetectionTester:
                 'fp': fp,
                 'fn': fn
             },
+            'pixel_metrics': pixel_metrics_summary,
             'confidence_stats': {
                 'avg_tampered_confidence': round(avg_tampered_conf, 4),
                 'avg_normal_confidence': round(avg_normal_conf, 4),
@@ -534,19 +658,37 @@ class TamperDetectionTester:
         print(f"  篡改图片: {info['tampered_images']}")
         print(f"  正常图片: {info['good_images']}")
         
-        # 效果指标
-        eff = report['effectiveness']
-        print(f"\n【效果指标】")
-        print(f"  Accuracy:  {eff['accuracy']:.4f} ({eff['tp']+eff['tn']}/{eff['tp']+eff['tn']+eff['fp']+eff['fn']})")
-        print(f"  Precision: {eff['precision']:.4f}")
-        print(f"  Recall:    {eff['recall']:.4f}")
-        print(f"  F1-score:  {eff['f1']:.4f}")
-        print(f"  FPR (假阳性率): {eff['fpr']:.4f}")
-        print(f"  FNR (假阴性率): {eff['fnr']:.4f}")
+        # 分类指标 (原 effectiveness)
+        cls = report.get('classification_metrics') or report.get('effectiveness', {})
+        print(f"\n【分类指标】(二分类)")
+        print(f"  Accuracy:  {cls.get('accuracy', 0):.4f} ({cls.get('tp', 0)+cls.get('tn', 0)}/{cls.get('tp', 0)+cls.get('tn', 0)+cls.get('fp', 0)+cls.get('fn', 0)})")
+        print(f"  Precision: {cls.get('precision', 0):.4f}")
+        print(f"  Recall:    {cls.get('recall', 0):.4f}")
+        print(f"  F1-score:  {cls.get('f1', 0):.4f}")
+        print(f"  FPR (假阳性率): {cls.get('fpr', 0):.4f}")
+        print(f"  FNR (假阴性率): {cls.get('fnr', 0):.4f}")
         print(f"\n  混淆矩阵:")
         print(f"              预测篡改  预测正常")
-        print(f"  实际篡改      {eff['tp']:4d}      {eff['fn']:4d}")
-        print(f"  实际正常      {eff['fp']:4d}      {eff['tn']:4d}")
+        print(f"  实际篡改      {cls.get('tp', 0):4d}      {cls.get('fn', 0):4d}")
+        print(f"  实际正常      {cls.get('fp', 0):4d}      {cls.get('tn', 0):4d}")
+        
+        # 像素级指标
+        pixel = report.get('pixel_metrics')
+        if pixel:
+            print(f"\n【像素级指标】(分割)")
+            print(f"  评估图片数: {pixel.get('evaluated_images', 0)}")
+            print(f"  平均 IoU:  {pixel.get('avg_iou', 0):.4f}")
+            print(f"  平均 Dice: {pixel.get('avg_dice', 0):.4f}")
+            print(f"  平均 Pixel-F1: {pixel.get('avg_pixel_f1', 0):.4f}")
+            print(f"  平均 Precision: {pixel.get('avg_pixel_precision', 0):.4f}")
+            print(f"  平均 Recall: {pixel.get('avg_pixel_recall', 0):.4f}")
+            print(f"  平均 Accuracy: {pixel.get('avg_pixel_accuracy', 0):.4f}")
+            print(f"\n  整体像素级指标 (汇总):")
+            print(f"  Overall IoU:  {pixel.get('overall_iou', 0):.4f}")
+            print(f"  Overall Dice: {pixel.get('overall_dice', 0):.4f}")
+            print(f"\n  像素混淆矩阵:")
+            print(f"  TP: {pixel.get('total_tp', 0):,}  TN: {pixel.get('total_tn', 0):,}")
+            print(f"  FP: {pixel.get('total_fp', 0):,}  FN: {pixel.get('total_fn', 0):,}")
         
         # 性能指标
         perf = report['performance']
@@ -593,15 +735,31 @@ class TamperDetectionTester:
         print("\n" + "=" * 60)
         print("算法对比结果")
         print("=" * 60)
+        
+        print(f"\n【分类指标对比】")
         print(f"\n{'算法':<10} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1':<10} {'Avg Time(ms)':<15}")
         print("-" * 70)
         
         for algo, report in reports.items():
             if report:
-                eff = report['effectiveness']
+                cls = report.get('classification_metrics') or report.get('effectiveness', {})
                 perf = report['performance']
-                print(f"{algo:<10} {eff['accuracy']:<10.4f} {eff['precision']:<10.4f} "
-                      f"{eff['recall']:<10.4f} {eff['f1']:<10.4f} {perf['avg_processing_time']*1000:<15.2f}")
+                print(f"{algo:<10} {cls.get('accuracy', 0):<10.4f} {cls.get('precision', 0):<10.4f} "
+                      f"{cls.get('recall', 0):<10.4f} {cls.get('f1', 0):<10.4f} {perf['avg_processing_time']*1000:<15.2f}")
+        
+        # 像素级指标对比
+        has_pixel_metrics = any(r.get('pixel_metrics') for r in reports.values() if r)
+        if has_pixel_metrics:
+            print(f"\n【像素级指标对比】")
+            print(f"\n{'算法':<10} {'IoU':<10} {'Dice':<10} {'Pixel-F1':<12} {'Pixel-Prec':<12} {'Pixel-Rec':<12}")
+            print("-" * 70)
+            
+            for algo, report in reports.items():
+                if report and report.get('pixel_metrics'):
+                    pixel = report['pixel_metrics']
+                    print(f"{algo:<10} {pixel.get('avg_iou', 0):<10.4f} {pixel.get('avg_dice', 0):<10.4f} "
+                          f"{pixel.get('avg_pixel_f1', 0):<12.4f} {pixel.get('avg_pixel_precision', 0):<12.4f} "
+                          f"{pixel.get('avg_pixel_recall', 0):<12.4f}")
         
         # 保存对比报告
         compare_path = os.path.join(self.output_dir, f"compare_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")

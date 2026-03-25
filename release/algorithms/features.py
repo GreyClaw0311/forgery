@@ -262,15 +262,58 @@ def extract_all_features(image_path: str) -> np.ndarray:
 
 # ============== 像素级特征提取器 ==============
 
+# 特征选择索引 (35维优化版)
+# 基于特征重要性筛选的 Top 35 特征
+SELECTED_FEATURE_INDICES_35 = [
+    # Noise (6) - 最重要
+    12, 13, 14, 15, 16, 17,
+    # Edge (6) - 重要
+    18, 19, 20, 21, 22, 23,
+    # DCT (8)
+    0, 1, 2, 3, 4, 5, 6, 7,
+    # ELA (4)
+    8, 9, 10, 11,
+    # 纹理 (8)
+    24, 25, 26, 27, 28, 29, 30, 31,
+    # 频域 (3)
+    47, 48, 51
+]
+
+
 class PixelFeatureExtractor:
-    """像素级特征提取器 (用于滑动窗口)"""
+    """像素级特征提取器 (用于滑动窗口)
     
-    def __init__(self, window_size: int = 32):
+    支持两种特征维度:
+    - 57维: 完整特征集 (默认)
+    - 35维: 优化特征集 (与旧模型兼容)
+    """
+    
+    def __init__(self, window_size: int = 32, feature_dim: int = 57):
+        """
+        初始化特征提取器
+        
+        Args:
+            window_size: 滑动窗口大小
+            feature_dim: 特征维度 (57 或 35)
+        """
         self.window_size = window_size
         self.half = window_size // 2
+        self.feature_dim = feature_dim
+        
+        if feature_dim == 35:
+            self.selected_indices = SELECTED_FEATURE_INDICES_35
+        else:
+            self.selected_indices = None
     
     def extract(self, patch: np.ndarray) -> np.ndarray:
-        """提取增强特征 (57维)"""
+        """提取增强特征
+        
+        Args:
+            patch: 图像块 (32x32)
+            
+        Returns:
+            特征向量 (57维或35维)
+        """
         features = []
         
         if len(patch.shape) == 3:
@@ -393,7 +436,13 @@ class PixelFeatureExtractor:
         features.append(np.std(local_contrast))
         features.append(np.percentile(local_contrast, 95))
         
-        return np.array(features, dtype=np.float32)
+        features_array = np.array(features, dtype=np.float32)
+        
+        # 特征选择 (35维)
+        if self.selected_indices is not None:
+            features_array = features_array[self.selected_indices]
+        
+        return features_array
     
     def _compute_lbp(self, gray: np.ndarray, radius: int = 1, n_points: int = 8) -> np.ndarray:
         """计算LBP特征"""
