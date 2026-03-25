@@ -167,7 +167,6 @@ class Config:
             'verbose': -1,
             'n_jobs': -1,
             'scale_pos_weight': self.SCALE_POS_WEIGHT,
-            'is_unbalance': True,
         }
     
     def get_xgb_params(self):
