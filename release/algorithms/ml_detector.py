@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-机器学习串联检测器
+机器学习串联检测器 - 优化版
 
-流程:
-1. GradientBoost 分类器判断图片是否篡改
-2. 如果篡改，使用像素级 ML 检测篡改区域
+优化点:
+1. 全局特征预计算 - 避免每个窗口重复 JPEG 编解码
+2. 滑动窗口统计 - 从预计算图取值
+3. 自动特征维度适配
 
-支持 GPU 推理加速
+预期加速: 5-10x
 """
 
 import os
 import sys
 import pickle
+import time
 import numpy as np
 import cv2
 from typing import Dict, Tuple, Optional
@@ -30,11 +32,13 @@ except ImportError:
 
 class MLDetector:
     """
-    机器学习串联检测器
+    机器学习串联检测器 - 优化版
     
     流程:
-    1. GradientBoost 判断是否篡改
-    2. 像素级 ML 定位篡改区域
+    1. GB 分类器判断是否篡改
+    2. 全局特征预计算 (ELA/DCT/Noise等)
+    3. 滑动窗口统计特征
+    4. 像素级 ML 定位篡改区域
     """
     
     def __init__(self,
@@ -49,7 +53,7 @@ class MLDetector:
             gb_model_path: GB 分类器模型路径
             gb_scaler_path: GB 标准化器路径
             pixel_model_path: 像素级模型路径
-            device: GPU 设备 (cuda:0 / cuda:1 / cpu)
+            device: GPU 设备 (仅用于兼容，当前模型不支持GPU)
         """
         self.device = device
         self.gb_model = None
@@ -57,6 +61,7 @@ class MLDetector:
         self.pixel_model = None
         self.pixel_scaler = None
         self.pixel_threshold = 0.5
+        self.pixel_feature_dim = 57
         
         # 默认路径
         if gb_model_path is None:
@@ -66,83 +71,50 @@ class MLDetector:
         if pixel_model_path is None:
             pixel_model_path = os.path.join(PROJECT_ROOT, 'models', 'pixel_segmentation', 'model.pkl')
         
-        # 加载 GB 分类器
+        # 加载模型
         self._load_gb_model(gb_model_path, gb_scaler_path)
-        
-        # 加载像素级模型
         self._load_pixel_model(pixel_model_path)
     
     def _load_gb_model(self, model_path: str, scaler_path: str):
         """加载 GB 分类器"""
         if os.path.exists(model_path):
-            with open(model_path, 'rb') as f:
-                self.gb_model = pickle.load(f)
-            print(f"GB 分类器已加载: {model_path}")
+            try:
+                with open(model_path, 'rb') as f:
+                    self.gb_model = pickle.load(f)
+                print(f"GB 分类器已加载: {model_path}")
+            except Exception as e:
+                print(f"GB 分类器加载失败: {e}")
         else:
             print(f"警告: GB 模型不存在: {model_path}")
         
         if os.path.exists(scaler_path):
-            with open(scaler_path, 'rb') as f:
-                self.gb_scaler = pickle.load(f)
+            try:
+                with open(scaler_path, 'rb') as f:
+                    self.gb_scaler = pickle.load(f)
+            except Exception as e:
+                print(f"GB 标准化器加载失败: {e}")
     
     def _load_pixel_model(self, model_path: str):
         """加载像素级模型"""
         if os.path.exists(model_path):
-            with open(model_path, 'rb') as f:
-                data = pickle.load(f)
-            self.pixel_model = data.get('model')
-            self.pixel_scaler = data.get('scaler')
-            self.pixel_threshold = data.get('threshold', 0.5)
-            
-            # 自动检测特征维度
-            if self.pixel_scaler is not None:
-                self.pixel_feature_dim = self.pixel_scaler.n_features_in_
-                print(f"像素级模型已加载: {model_path} (特征维度: {self.pixel_feature_dim})")
-            else:
-                self.pixel_feature_dim = 57
-                print(f"像素级模型已加载: {model_path}")
+            try:
+                with open(model_path, 'rb') as f:
+                    data = pickle.load(f)
+                self.pixel_model = data.get('model')
+                self.pixel_scaler = data.get('scaler')
+                self.pixel_threshold = data.get('threshold', 0.5)
+                
+                # 自动检测特征维度
+                if self.pixel_scaler is not None:
+                    self.pixel_feature_dim = self.pixel_scaler.n_features_in_
+                    print(f"像素级模型已加载: {model_path} (特征维度: {self.pixel_feature_dim})")
+                else:
+                    self.pixel_feature_dim = 57
+                    print(f"像素级模型已加载: {model_path}")
+            except Exception as e:
+                print(f"像素级模型加载失败: {e}")
         else:
             print(f"警告: 像素级模型不存在: {model_path}")
-            self.pixel_feature_dim = 57
-    
-    def _extract_gb_features(self, image_path: str) -> np.ndarray:
-        """提取 GB 分类器所需的特征"""
-        from algorithms.features import extract_all_features
-        return extract_all_features(image_path)
-    
-    def _extract_pixel_features(self, image: np.ndarray) -> Tuple[np.ndarray, list]:
-        """提取像素级特征 (GPU 加速)"""
-        h, w = image.shape[:2]
-        window_size = 32
-        stride = 16
-        half = window_size // 2
-        
-        features_list = []
-        positions = []
-        
-        for y in range(half, h - half, stride):
-            for x in range(half, w - half, stride):
-                patch = image[y-half:y+half, x-half:x+half]
-                if patch.shape[0] != window_size or patch.shape[1] != window_size:
-                    continue
-                
-                feat = self._extract_patch_features(patch)
-                features_list.append(feat)
-                positions.append((y, x))
-        
-        if not features_list:
-            return np.array([]), []
-        
-        return np.array(features_list), positions
-    
-    def _extract_patch_features(self, patch: np.ndarray) -> np.ndarray:
-        """从图像块提取特征"""
-        from algorithms.features import PixelFeatureExtractor
-        
-        # 使用模型期望的特征维度
-        feature_dim = getattr(self, 'pixel_feature_dim', 57)
-        extractor = PixelFeatureExtractor(32, feature_dim=feature_dim)
-        return extractor.extract(patch)
     
     def predict(self, image_path: str) -> Dict:
         """
@@ -153,31 +125,34 @@ class MLDetector:
             
         Returns:
             {
-                'is_tampered': bool,      # 是否篡改
-                'confidence': float,      # 置信度
-                'mask': np.ndarray,       # 篡改区域掩码
-                'mask_base64': str        # 掩码 Base64
+                'is_tampered': bool,
+                'confidence': float,
+                'mask': np.ndarray,
+                'preprocess_time': float,
+                'inference_time': float
             }
         """
         result = {
             'is_tampered': False,
             'confidence': 0.0,
             'mask': None,
-            'mask_base64': None
+            'preprocess_time': 0.0,
+            'inference_time': 0.0
         }
         
-        # 1. GB 分类器判断是否篡改
-        if self.gb_model is None:
-            # 模型未加载，跳过分类直接检测
-            result['is_tampered'] = True
-            result['confidence'] = 1.0
-        else:
+        # 读取图片
+        image = cv2.imread(image_path)
+        if image is None:
+            return result
+        
+        # 1. GB 分类器前置检测
+        if self.gb_model is not None:
             try:
-                features = self._extract_gb_features(image_path)
+                from algorithms.features import extract_all_features
+                features = extract_all_features(image_path)
                 if features is not None and self.gb_scaler is not None:
                     features_scaled = self.gb_scaler.transform([features])
                     proba = self.gb_model.predict_proba(features_scaled)[0, 1]
-                    # 转换为 Python 原生类型，避免 FastAPI 序列化错误
                     result['is_tampered'] = bool(proba > 0.5)
                     result['confidence'] = float(proba)
                 else:
@@ -187,31 +162,74 @@ class MLDetector:
                 print(f"GB 分类错误: {e}")
                 result['is_tampered'] = True
                 result['confidence'] = 0.5
+        else:
+            result['is_tampered'] = True
+            result['confidence'] = 1.0
         
-        # 2. 如果篡改，定位区域
-        if result['is_tampered'] and self.pixel_model is not None:
-            try:
-                image = cv2.imread(image_path)
-                if image is not None:
-                    features, positions = self._extract_pixel_features(image)
-                    
-                    if len(features) > 0:
-                        features_scaled = self.pixel_scaler.transform(features)
-                        proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
-                        
-                        # 生成掩码
-                        h, w = image.shape[:2]
-                        mask = self._generate_mask(proba, positions, (h, w))
-                        result['mask'] = mask
-                        
-                        # 转换为 Base64
-                        result['mask_base64'] = self._mask_to_base64(mask)
-            except Exception as e:
-                print(f"像素级检测错误: {e}")
+        # 如果 GB 判断为正常，直接返回
+        if not result['is_tampered']:
+            return result
+        
+        # 2. 像素级检测 (使用全局预计算优化)
+        if self.pixel_model is None:
+            return result
+        
+        try:
+            preprocess_start = time.time()
+            
+            # 使用优化版特征提取
+            from algorithms.features import GlobalFeatureCache, FastPixelFeatureExtractor
+            
+            # 全局特征预计算
+            cache = GlobalFeatureCache(image, quality=90)
+            
+            # 创建快速提取器
+            extractor = FastPixelFeatureExtractor(32, self.pixel_feature_dim)
+            extractor.set_cache(cache)
+            
+            # 滑动窗口
+            h, w = image.shape[:2]
+            window_size = 32
+            stride = 16  # 可以增大到 32 进一步加速
+            half = window_size // 2
+            
+            features_list = []
+            positions = []
+            
+            for y in range(half, h - half, stride):
+                for x in range(half, w - half, stride):
+                    feat = extractor.extract_from_cache(y, x)
+                    features_list.append(feat)
+                    positions.append((y, x))
+            
+            preprocess_time = time.time() - preprocess_start
+            result['preprocess_time'] = preprocess_time
+            
+            if len(features_list) == 0:
+                return result
+            
+            # 模型推理
+            inference_start = time.time()
+            
+            features = np.array(features_list)
+            features_scaled = self.pixel_scaler.transform(features)
+            proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
+            
+            inference_time = time.time() - inference_start
+            result['inference_time'] = inference_time
+            
+            # 生成掩码
+            mask = self._generate_mask(proba, positions, (h, w))
+            result['mask'] = mask
+            
+        except Exception as e:
+            print(f"像素级检测错误: {e}")
+            import traceback
+            traceback.print_exc()
         
         return result
     
-    def _generate_mask(self, proba: np.ndarray, positions: list, 
+    def _generate_mask(self, proba: np.ndarray, positions: list,
                        shape: Tuple[int, int]) -> np.ndarray:
         """生成篡改区域掩码"""
         h, w = shape
@@ -256,44 +274,56 @@ class MLDetector:
                 result[labels == i] = 255
         
         return result
-    
-    def _mask_to_base64(self, mask: np.ndarray) -> str:
-        """掩码转 Base64"""
-        import base64
-        _, buffer = cv2.imencode('.png', mask)
-        return base64.b64encode(buffer).decode('utf-8')
 
 
-# GPU 加速版本
+# GPU 兼容版 (实际仍使用 CPU)
 class MLDetectorGPU(MLDetector):
-    """GPU 加速版 ML 检测器"""
+    """GPU 兼容版 ML 检测器
+    
+    注意: 当前模型 (sklearn RF/GB) 仅支持 CPU
+    此类保留 GPU 接口以便将来扩展
+    """
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        if HAS_TORCH and torch.cuda.is_available():
-            self.device = torch.device(kwargs.get('device', 'cuda:0'))
-            print(f"使用 GPU: {self.device}")
-        else:
-            self.device = None
-            print("GPU 不可用，使用 CPU")
+        if HAS_TORCH:
+            try:
+                if torch.cuda.is_available():
+                    self.device = torch.device(kwargs.get('device', 'cuda:0'))
+                    print(f"GPU 可用: {self.device}")
+                    print("注意: 当前 sklearn 模型仅支持 CPU，GPU 用于其他操作")
+                else:
+                    print("GPU 不可用，使用 CPU")
+            except Exception as e:
+                print(f"GPU 初始化失败: {e}")
+                print("使用 CPU")
 
 
 if __name__ == '__main__':
     import argparse
     
-    parser = argparse.ArgumentParser(description='ML 串联检测器')
+    parser = argparse.ArgumentParser(description='ML 串联检测器 - 优化版')
     parser.add_argument('--image', type=str, required=True, help='图片路径')
     parser.add_argument('--device', type=str, default='cuda:0', help='GPU 设备')
     
     args = parser.parse_args()
     
+    print("加载模型...")
     detector = MLDetectorGPU(device=args.device)
-    result = detector.predict(args.image)
     
-    print(f"是否篡改: {result['is_tampered']}")
-    print(f"置信度: {result['confidence']:.4f}")
+    print(f"\n检测图片: {args.image}")
+    start_time = time.time()
+    result = detector.predict(args.image)
+    total_time = time.time() - start_time
+    
+    print(f"\n结果:")
+    print(f"  是否篡改: {result['is_tampered']}")
+    print(f"  置信度: {result['confidence']:.4f}")
+    print(f"  预处理时间: {result['preprocess_time']*1000:.1f}ms")
+    print(f"  推理时间: {result['inference_time']*1000:.1f}ms")
+    print(f"  总耗时: {total_time*1000:.1f}ms")
     
     if result['mask'] is not None:
         cv2.imwrite('output_mask.png', result['mask'])
-        print("掩码已保存: output_mask.png")
+        print(f"\n掩码已保存: output_mask.png")

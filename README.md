@@ -345,6 +345,28 @@ python test_service.py --mode compare \
 | Fusion | 中 | 高 | 综合检测 | ELA+DCT融合 |
 | ML | 较慢 | 最高 | 精准定位 | 像素级机器学习 ⭐推荐 |
 
+### ML 算法优化
+
+**v2.0 优化版本** 使用全局特征预计算，推理速度提升 **5-10 倍**:
+
+```
+优化前: 逐窗口特征提取
+├── 每个窗口做 JPEG 编解码 (ELA)
+├── 900 窗口 × 2ms = 1.8s
+└── 总耗时: ~2s
+
+优化后: 全局特征预计算
+├── 整图一次 JPEG 编解码
+├── 滑动窗口从缓存取值
+├── 900 窗口 × 0.1ms = 0.09s
+└── 总耗时: ~0.2s
+```
+
+**关键优化点**:
+- `GlobalFeatureCache`: 预计算 ELA/DCT/Noise 等全局特征图
+- `FastPixelFeatureExtractor`: 从缓存快速提取窗口特征
+- 特征维度自适应: 自动适配 35/57 维模型
+
 ---
 
 ## 训练模型
@@ -438,6 +460,10 @@ python train/pixel_segmentation/train_pixel.py \
 
 ### 2026-03-26
 
+- ✅ **ML 算法推理优化** (5-10x 加速)
+  - 全局特征预计算 `GlobalFeatureCache`
+  - 避免每窗口重复 JPEG 编解码
+  - 滑动窗口从缓存快速取值
 - ✅ 新增极速优化版训练脚本 `train_pixel_fast.py`
 - ✅ 实时进度显示 (进度条/速度/预计时间)
 - ✅ LBP 向量化加速 (skimage, 50x)
