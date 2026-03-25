@@ -7,6 +7,14 @@ import cv2
 import numpy as np
 from typing import List
 
+# 尝试导入 skimage (LBP 加速)
+try:
+    from skimage.feature import local_binary_pattern
+    HAS_SKIMAGE = True
+except ImportError:
+    HAS_SKIMAGE = False
+    print("警告: 未安装 scikit-image, LBP 将使用慢速实现。建议: pip install scikit-image")
+
 
 # ============== GB分类器特征提取 ==============
 
@@ -341,22 +349,28 @@ class PixelFeatureExtractor:
         _, encoded = cv2.imencode('.jpg', patch, encode_param)
         decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
         ela = np.abs(patch.astype(np.float32) - decoded.astype(np.float32))
+        ela_flat = ela.flatten()
         
-        features.append(np.mean(ela))
-        features.append(np.std(ela))
-        features.append(np.percentile(ela.flatten(), 95))
-        features.append(np.max(ela))
+        ela_p95 = np.percentile(ela_flat, 95)
+        features.append(np.mean(ela_flat))
+        features.append(np.std(ela_flat))
+        features.append(ela_p95)
+        features.append(np.max(ela_flat))
         
         # 3. Noise特征 (6个)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         noise = gray - blurred
+        noise_abs = np.abs(noise)
+        noise_flat = noise_abs.flatten()
         
-        features.append(np.mean(np.abs(noise)))
+        # 合并 percentile 计算
+        noise_p95, noise_p99 = np.percentile(noise_flat, [95, 99])
+        features.append(np.mean(noise_abs))
         features.append(np.std(noise))
-        features.append(np.percentile(np.abs(noise), 95))
-        features.append(np.max(np.abs(noise)))
-        features.append(np.percentile(np.abs(noise), 99))
-        features.append(np.median(np.abs(noise)))
+        features.append(noise_p95)
+        features.append(np.max(noise_abs))
+        features.append(noise_p99)
+        features.append(np.median(noise_abs))
         
         # 4. Edge特征 (6个)
         edges = cv2.Canny(gray.astype(np.uint8), 50, 150)
@@ -445,23 +459,29 @@ class PixelFeatureExtractor:
         return features_array
     
     def _compute_lbp(self, gray: np.ndarray, radius: int = 1, n_points: int = 8) -> np.ndarray:
-        """计算LBP特征"""
-        h, w = gray.shape
-        lbp = np.zeros((h - 2*radius, w - 2*radius), dtype=np.uint8)
-        
-        for i in range(radius, h - radius):
-            for j in range(radius, w - radius):
-                center = gray[i, j]
-                code = 0
-                for p in range(n_points):
-                    angle = 2 * np.pi * p / n_points
-                    x = int(i + radius * np.cos(angle))
-                    y = int(j + radius * np.sin(angle))
-                    if gray[x, y] >= center:
-                        code |= (1 << p)
-                lbp[i - radius, j - radius] = code
-        
-        return lbp
+        """计算LBP特征 - 与训练脚本保持一致"""
+        if HAS_SKIMAGE:
+            # 使用 skimage 向量化实现 (与训练一致)
+            # method='uniform' 产生 0-58 的编码，但我们在 bins=8 范围内统计
+            return local_binary_pattern(gray, P=n_points, R=radius, method='uniform').astype(np.uint8)
+        else:
+            # 慢速备用实现
+            h, w = gray.shape
+            lbp = np.zeros((h - 2*radius, w - 2*radius), dtype=np.uint8)
+            
+            for i in range(radius, h - radius):
+                for j in range(radius, w - radius):
+                    center = gray[i, j]
+                    code = 0
+                    for p in range(n_points):
+                        angle = 2 * np.pi * p / n_points
+                        x = int(i + radius * np.cos(angle))
+                        y = int(j + radius * np.sin(angle))
+                        if gray[x, y] >= center:
+                            code |= (1 << p)
+                    lbp[i - radius, j - radius] = code
+            
+            return lbp
 
 
 # 兼容性别名
