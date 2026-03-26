@@ -464,7 +464,8 @@ class FastPixelFeatureExtractor:
         if feature_dim == 35:
             self.selected_indices = SELECTED_FEATURE_INDICES_35
         elif feature_dim == 49:
-            self.selected_indices = SELECTED_FEATURE_INDICES_49
+            # 49维通过use_lbp=False直接实现，不需要索引选择
+            self.selected_indices = None
         else:
             self.selected_indices = None
         
@@ -616,8 +617,17 @@ class FastPixelFeatureExtractor:
         # 转换为数组
         features_array = np.array(features, dtype=np.float32)
         
-        # 特征选择 (35维或49维)
-        if self.selected_indices is not None:
+        # 特征选择逻辑:
+        # - use_lbp=True, feature_dim=57: 直接返回57维
+        # - use_lbp=False, feature_dim=49: 直接返回49维 (已跳过LBP)
+        # - feature_dim=35: 从57维中选择35个重要特征
+        if self.feature_dim == 35 and self.selected_indices is not None:
+            # 35维需要从完整特征中选择
+            # 如果use_lbp=False，需要先补齐LBP特征
+            if not self.use_lbp:
+                # 补零占位，保持索引正确
+                lbp_placeholder = [0.0] * 8
+                features_array = np.concatenate([features_array[:37], lbp_placeholder, features_array[37:]])
             features_array = features_array[self.selected_indices]
         
         return features_array
@@ -654,7 +664,8 @@ class PixelFeatureExtractor:
         if feature_dim == 35:
             self.selected_indices = SELECTED_FEATURE_INDICES_35
         elif feature_dim == 49:
-            self.selected_indices = SELECTED_FEATURE_INDICES_49
+            # 49维通过use_lbp=False直接实现，不需要索引选择
+            self.selected_indices = None
         else:
             self.selected_indices = None
         
@@ -822,7 +833,11 @@ class PixelFeatureExtractor:
         
         features_array = np.array(features, dtype=np.float32)
         
-        if self.selected_indices is not None:
+        # 特征选择逻辑:
+        # - use_lbp=True, feature_dim=57: 直接返回57维
+        # - use_lbp=False, feature_dim=49: 直接返回49维 (已跳过LBP)
+        # - feature_dim=35: 从57维中选择35个重要特征
+        if self.feature_dim == 35 and self.selected_indices is not None:
             features_array = features_array[self.selected_indices]
         
         return features_array
