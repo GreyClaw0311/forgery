@@ -78,7 +78,7 @@ forgery/
 │   └── pixel_segmentation/     # 像素级模型训练
 │
 └── release/                     # 推理服务 (在线部署)
-    ├── main.py                 # FastAPI 主程序
+    ├── server_forgrey.py       # FastAPI 主程序
     ├── test_service.py         # 测试脚本 ⭐
     ├── requirements.txt        # 服务依赖
     │
@@ -129,7 +129,7 @@ release/models/
 
 ```bash
 cd release
-python main.py
+python server_forgrey.py
 ```
 
 服务启动后访问: http://localhost:8000

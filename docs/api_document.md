@@ -230,10 +230,10 @@ curl "http://localhost:8000/health"
 
 ```bash
 # 方式1: 直接运行
-python main.py
+python server_forgrey.py
 
 # 方式2: 使用 uvicorn
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn server_forgrey:app --host 0.0.0.0 --port 8000
 
 # 方式3: Docker 部署
 docker build -t forgery-detector .
