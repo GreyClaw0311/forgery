@@ -62,6 +62,7 @@ class MLDetector:
         self.pixel_scaler = None
         self.pixel_threshold = 0.5
         self.pixel_feature_dim = 57
+        self.use_lbp = True  # 默认使用LBP
         
         # 默认路径
         if gb_model_path is None:
@@ -104,13 +105,31 @@ class MLDetector:
                 self.pixel_scaler = data.get('scaler')
                 self.pixel_threshold = data.get('threshold', 0.5)
                 
-                # 自动检测特征维度
+                # 从模型配置中读取特征维度
+                model_config = data.get('config', {})
+                self.pixel_feature_dim = model_config.get('feature_dim', 57)
+                self.use_lbp = model_config.get('use_lbp', True)
+                
+                # 自动检测特征维度（从scaler）
                 if self.pixel_scaler is not None:
-                    self.pixel_feature_dim = self.pixel_scaler.n_features_in_
-                    print(f"像素级模型已加载: {model_path} (特征维度: {self.pixel_feature_dim})")
+                    detected_dim = self.pixel_scaler.n_features_in_
+                    if detected_dim != self.pixel_feature_dim:
+                        print(f"检测到特征维度不一致: 配置={self.pixel_feature_dim}, scaler={detected_dim}")
+                        self.pixel_feature_dim = detected_dim
+                    
+                    # 根据特征维度判断是否使用LBP
+                    if self.pixel_feature_dim == 49:
+                        self.use_lbp = False
+                    elif self.pixel_feature_dim == 57:
+                        self.use_lbp = True
+                    
+                    print(f"像素级模型已加载: {model_path}")
+                    print(f"  特征维度: {self.pixel_feature_dim}")
+                    print(f"  使用LBP: {self.use_lbp}")
                 else:
                     self.pixel_feature_dim = 57
-                    print(f"像素级模型已加载: {model_path}")
+                    self.use_lbp = True
+                    print(f"像素级模型已加载: {model_path} (默认配置)")
             except Exception as e:
                 print(f"像素级模型加载失败: {e}")
         else:
@@ -183,8 +202,12 @@ class MLDetector:
             # 全局特征预计算
             cache = GlobalFeatureCache(image, quality=90)
             
-            # 创建快速提取器
-            extractor = FastPixelFeatureExtractor(32, self.pixel_feature_dim)
+            # 创建快速提取器 (根据模型配置决定是否使用LBP)
+            extractor = FastPixelFeatureExtractor(
+                window_size=32,
+                feature_dim=self.pixel_feature_dim,
+                use_lbp=self.use_lbp
+            )
             extractor.set_cache(cache)
             
             # 滑动窗口

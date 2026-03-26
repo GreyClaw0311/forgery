@@ -412,6 +412,21 @@ SELECTED_FEATURE_INDICES_35 = [
     47, 48, 51               # 频域 (3)
 ]
 
+# 特征选择索引 (49维无LBP版)
+# 57维特征中移除8个LBP特征 (索引37-44)
+# 特征顺序: DCT(0-7), ELA(8-11), Noise(12-17), Edge(18-23), 纹理(24-31), Color(32-36), LBP(37-44), 频域(45-50), 局部对比度(51-56)
+SELECTED_FEATURE_INDICES_49 = [
+    0, 1, 2, 3, 4, 5, 6, 7,  # DCT (8)
+    8, 9, 10, 11,            # ELA (4)
+    12, 13, 14, 15, 16, 17,  # Noise (6)
+    18, 19, 20, 21, 22, 23,  # Edge (6)
+    24, 25, 26, 27, 28, 29, 30, 31,  # 纹理 (8)
+    32, 33, 34, 35, 36,      # Color (5)
+    # 跳过 LBP (37-44)
+    45, 46, 47, 48, 49, 50,  # 频域 (6)
+    51, 52, 53, 54, 55, 56   # 局部对比度 (6)
+]
+
 
 class FastPixelFeatureExtractor:
     """
@@ -419,22 +434,37 @@ class FastPixelFeatureExtractor:
     
     使用全局预计算特征图，滑动窗口只需取局部统计
     相比逐窗口计算，加速 5-10 倍
+    
+    支持特征维度:
+    - 57: 完整特征 (含LBP)
+    - 49: 优化特征 (无LBP，推荐)
+    - 35: 精简特征 (兼容旧模型)
     """
     
-    def __init__(self, window_size: int = 32, feature_dim: int = 57):
+    def __init__(self, window_size: int = 32, feature_dim: int = 57, use_lbp: bool = None):
         """
         初始化
         
         Args:
             window_size: 窗口大小
-            feature_dim: 特征维度 (57 或 35)
+            feature_dim: 特征维度 (57/49/35)
+            use_lbp: 是否使用LBP特征 (None表示根据feature_dim自动判断)
         """
         self.window_size = window_size
         self.half = window_size // 2
         self.feature_dim = feature_dim
         
+        # 自动判断是否使用LBP
+        if use_lbp is None:
+            self.use_lbp = (feature_dim == 57)
+        else:
+            self.use_lbp = use_lbp
+        
+        # 特征选择
         if feature_dim == 35:
             self.selected_indices = SELECTED_FEATURE_INDICES_35
+        elif feature_dim == 49:
+            self.selected_indices = SELECTED_FEATURE_INDICES_49
         else:
             self.selected_indices = None
         
@@ -547,10 +577,11 @@ class FastPixelFeatureExtractor:
         else:
             features.extend([0] * 5)
         
-        # ===== 7. LBP特征 (8个) - 从预计算LBP图提取 =====
-        lbp_hist, _ = np.histogram(lbp_patch, bins=8, range=(0, 256))
-        lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
-        features.extend(lbp_hist.tolist())
+        # ===== 7. LBP特征 (8个) - 从预计算LBP图提取 (可选) =====
+        if self.use_lbp:
+            lbp_hist, _ = np.histogram(lbp_patch, bins=8, range=(0, 256))
+            lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
+            features.extend(lbp_hist.tolist())
         
         # ===== 8. 频域特征 (6个) - 从预计算频谱图提取 =====
         h_p, w_p = freq_patch.shape
@@ -585,7 +616,7 @@ class FastPixelFeatureExtractor:
         # 转换为数组
         features_array = np.array(features, dtype=np.float32)
         
-        # 特征选择 (35维)
+        # 特征选择 (35维或49维)
         if self.selected_indices is not None:
             features_array = features_array[self.selected_indices]
         
@@ -601,20 +632,34 @@ class PixelFeatureExtractor:
     支持两种模式:
     1. 快速模式 (推荐): 使用 GlobalFeatureCache 预计算
     2. 兼容模式: 逐窗口计算
+    
+    支持特征维度:
+    - 57: 完整特征 (含LBP)
+    - 49: 优化特征 (无LBP，推荐)
+    - 35: 精简特征 (兼容旧模型)
     """
     
-    def __init__(self, window_size: int = 32, feature_dim: int = 57):
+    def __init__(self, window_size: int = 32, feature_dim: int = 57, use_lbp: bool = None):
         self.window_size = window_size
         self.half = window_size // 2
         self.feature_dim = feature_dim
         
+        # 自动判断是否使用LBP
+        if use_lbp is None:
+            self.use_lbp = (feature_dim == 57)
+        else:
+            self.use_lbp = use_lbp
+        
+        # 特征选择
         if feature_dim == 35:
             self.selected_indices = SELECTED_FEATURE_INDICES_35
+        elif feature_dim == 49:
+            self.selected_indices = SELECTED_FEATURE_INDICES_49
         else:
             self.selected_indices = None
         
         # 快速提取器
-        self._fast_extractor = FastPixelFeatureExtractor(window_size, feature_dim)
+        self._fast_extractor = FastPixelFeatureExtractor(window_size, feature_dim, self.use_lbp)
     
     def set_global_cache(self, cache: GlobalFeatureCache):
         """设置全局特征缓存 (启用快速模式)"""
@@ -730,14 +775,15 @@ class PixelFeatureExtractor:
         else:
             features.extend([0] * 5)
         
-        # 7. LBP特征 (8个)
-        if HAS_SKIMAGE:
-            lbp = local_binary_pattern(gray.astype(np.uint8), P=8, R=1, method='uniform')
-        else:
-            lbp = self._compute_lbp(gray.astype(np.uint8))
-        lbp_hist, _ = np.histogram(lbp, bins=8, range=(0, 256))
-        lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
-        features.extend(lbp_hist.tolist())
+        # 7. LBP特征 (8个) - 可选
+        if self.use_lbp:
+            if HAS_SKIMAGE:
+                lbp = local_binary_pattern(gray.astype(np.uint8), P=8, R=1, method='uniform')
+            else:
+                lbp = self._compute_lbp(gray.astype(np.uint8))
+            lbp_hist, _ = np.histogram(lbp, bins=8, range=(0, 256))
+            lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
+            features.extend(lbp_hist.tolist())
         
         # 8. 频域特征 (6个)
         f = np.fft.fft2(gray)
