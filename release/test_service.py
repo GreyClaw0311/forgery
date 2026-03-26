@@ -308,15 +308,6 @@ class TamperDetectionTester:
             if response.status_code == 200:
                 result = response.json()
                 result['request_time'] = request_time
-                # 打印第一个请求的完整响应用于调试
-                if not hasattr(self, '_first_request_logged'):
-                    self._first_request_logged = True
-                    print(f"\n[DEBUG] 第一个请求响应:")
-                    print(f"  status: '{result.get('status')}'")
-                    print(f"  status.startswith('0001'): {str(result.get('status', '')).startswith('0001')}")
-                    print(f"  is_tampered: {result.get('is_tampered')}")
-                    print(f"  confidence: {result.get('confidence')}")
-                    print(f"  processing_time: {result.get('processing_time')}")
                 return result
             else:
                 error_result = {
@@ -406,17 +397,18 @@ class TamperDetectionTester:
             save_image: 是否保存结果图片
             mask_path: mask 路径 (用于判断真实标签)
         """
-        print("=" * 60)
-        print("单张图片测试")
-        print("=" * 60)
+        print("\n" + "=" * 60, flush=True)
+        print("单张图片测试", flush=True)
+        print("=" * 60, flush=True)
         
         if not os.path.exists(image_path):
             print(f"✗ 图片不存在: {image_path}")
             return
         
-        print(f"图片: {image_path}")
-        print(f"算法: {algorithm}")
-        print("-" * 60)
+        print(f"图片: {image_path}", flush=True)
+        print(f"算法: {algorithm}", flush=True)
+        print(f"保存图片: {save_image}", flush=True)
+        print("-" * 60, flush=True)
         
         # 判断真实标签
         true_label = None
@@ -425,44 +417,48 @@ class TamperDetectionTester:
             print(f"真实标签: {'篡改' if true_label else '正常'}")
         
         # 检测
-        start_time = time.time()
+        print("\n发送检测请求...", flush=True)
         result = self.detect_single(image_path, algorithm)
-        total_time = time.time() - start_time
         
         # 打印结果
-        print(f"\n检测结果:")
+        print(f"\n检测结果:", flush=True)
         status = result.get('status', '')
-        print(f"  状态码: {status}")
+        print(f"  状态码: {status}", flush=True)
         
         if status.startswith('0001'):
             is_tampered = result.get('is_tampered', False)
             confidence = result.get('confidence', 0)
             processing_time = result.get('processing_time', 0)
             
-            print(f"  是否篡改: {'是' if is_tampered else '否'}")
-            print(f"  置信度: {confidence:.4f}")
-            print(f"  处理时间: {processing_time*1000:.2f}ms")
-            print(f"  请求时间: {result.get('request_time', 0)*1000:.2f}ms")
+            print(f"  是否篡改: {'是' if is_tampered else '否'}", flush=True)
+            print(f"  置信度: {confidence:.4f}", flush=True)
+            print(f"  处理时间: {processing_time*1000:.2f}ms", flush=True)
+            print(f"  请求时间: {result.get('request_time', 0)*1000:.2f}ms", flush=True)
             
             # 判断正确性
             if true_label is not None:
                 pred_label = 1 if is_tampered else 0
                 is_correct = pred_label == true_label
-                print(f"  判断: {'✓ 正确' if is_correct else '✗ 错误'}")
+                print(f"  判断: {'✓ 正确' if is_correct else '✗ 错误'}", flush=True)
             
             # 篡改区域
             tamper_regions = result.get('tamper_regions')
             if tamper_regions:
-                print(f"  篡改区域数: {len(tamper_regions)}")
+                print(f"  篡改区域数: {len(tamper_regions)}", flush=True)
                 for i, region in enumerate(tamper_regions[:3]):
-                    print(f"    区域{i+1}: {region}")
+                    print(f"    区域{i+1}: {region}", flush=True)
             
             # 保存结果图片
             if save_image:
-                output_path = os.path.join(self.output_dir, 'images', 
-                    f"{os.path.splitext(os.path.basename(image_path))[0]}_{algorithm}_result.jpg")
-                self._save_result_image(image_path, result, output_path, true_label, mask_path)
-                print(f"\n  结果图片: {output_path}")
+                output_name = f"{os.path.splitext(os.path.basename(image_path))[0]}_{algorithm}_result.jpg"
+                output_path = os.path.join(self.output_dir, 'images', output_name)
+                
+                print(f"\n保存结果图片...", flush=True)
+                success = self._save_result_image(image_path, result, output_path, true_label, mask_path)
+                if success:
+                    print(f"  ✓ 结果图片已保存: {output_path}", flush=True)
+                else:
+                    print(f"  ✗ 保存失败", flush=True)
             
             return {
                 'success': True,
@@ -474,7 +470,7 @@ class TamperDetectionTester:
         else:
             # 错误情况
             error_msg = status if status else result.get('message', 'Unknown error')
-            print(f"  ✗ 检测失败: {error_msg}")
+            print(f"  ✗ 检测失败: {error_msg}", flush=True)
             return {
                 'success': False,
                 'error': error_msg,
