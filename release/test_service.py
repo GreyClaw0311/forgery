@@ -459,7 +459,11 @@ class TamperDetectionTester:
             # 资源采样
             self.resource_monitor.sample()
             
-            if result.get('status', '').startswith('0001'):
+            # 检查返回结果
+            status = result.get('status', '')
+            
+            # 成功状态码以 '0001' 开头
+            if status.startswith('0001'):
                 processing_time = result.get('processing_time', 0)
                 processing_times.append(processing_time)
                 
@@ -506,13 +510,22 @@ class TamperDetectionTester:
                     'processing_time': processing_time,
                 })
             else:
+                # 错误状态码: 0000/0002/0004/0007
+                # 服务返回的错误信息在 status 字段中，格式: "XXXX:错误描述"
+                error_msg = status if status else result.get('message', 'Unknown error')
+                
+                # 打印前几个错误的详细信息
+                error_count = sum(1 for r in results if r.get('pred_label') == -1)
+                if error_count < 5:
+                    print(f"\n  ⚠️ 图片 {image_file} 检测失败: {error_msg}")
+                
                 fn += 1 if true_label == 1 else 0
                 fp += 1 if true_label == 0 else 0
                 results.append({
                     'image': image_file,
                     'true_label': true_label,
                     'pred_label': -1,
-                    'error': result.get('message', 'Unknown error'),
+                    'error': error_msg,
                 })
             
             # 进度显示
