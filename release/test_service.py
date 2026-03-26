@@ -459,12 +459,12 @@ class TamperDetectionTester:
             # 资源采样
             self.resource_monitor.sample()
             
-            if result.get('status') == '0001':
-                processing_time = result.get('data', {}).get('inference_time', 0)
+            if result.get('status', '').startswith('0001'):
+                processing_time = result.get('processing_time', 0)
                 processing_times.append(processing_time)
                 
-                is_tampered = result.get('data', {}).get('is_tampered', False)
-                confidence = result.get('data', {}).get('confidence', 0)
+                is_tampered = result.get('is_tampered', False)
+                confidence = result.get('confidence', 0)
                 pred_label = 1 if is_tampered else 0
                 
                 # 更新混淆矩阵
@@ -486,7 +486,7 @@ class TamperDetectionTester:
                 # 像素级指标 (如果有mask和预测mask)
                 if os.path.exists(mask_path) and pred_label == 1:
                     true_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                    pred_mask_base64 = result.get('data', {}).get('mask_base64')
+                    pred_mask_base64 = result.get('mask_base64')
                     
                     if true_mask is not None and pred_mask_base64:
                         pred_mask = self.decode_mask_base64(pred_mask_base64)
