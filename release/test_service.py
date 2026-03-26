@@ -483,59 +483,132 @@ class TamperDetectionTester:
         try:
             image = cv2.imread(image_path)
             if image is None:
+                print(f"  读取原图失败: {image_path}")
                 return False
             
             h, w = image.shape[:2]
             
-            # 创建画布 (原图 + 结果)
-            canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
-            canvas[:h, :w] = image
-            canvas[:, w:w+20] = 200
+            # 方式1: 使用服务返回的 marked_image_base64 (优先)
+            marked_image_base64 = result.get('marked_image_base64')
+            if marked_image_base64:
+                print(f"  使用服务返回的标注图片", flush=True)
+                marked_image = self.decode_mask_base64(marked_image_base64)
+                if marked_image is not None:
+                    # 转换为彩色图（如果是灰度图）
+                    if len(marked_image.shape) == 2:
+                        marked_image = cv2.cvtColor(marked_image, cv2.COLOR_GRAY2BGR)
+                    
+                    # 创建画布 (原图 + 标注图)
+                    canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
+                    canvas[:h, :w] = image
+                    canvas[:, w:w+20] = 200
+                    canvas[:h, w+20:] = marked_image
+                    
+                    # 添加文字标注
+                    self._add_text_annotations(canvas[:, w+20:], result, true_label, h, w)
+                    
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    cv2.imwrite(output_path, canvas)
+                    return True
             
-            # 创建结果图
-            pred_image = image.copy()
+            # 方式2: 使用服务返回的 mask_base64 创建掩码覆盖
+            mask_base64 = result.get('mask_base64')
+            if mask_base64:
+                print(f"  使用服务返回的掩码图片", flush=True)
+                mask = self.decode_mask_base64(mask_base64)
+                if mask is not None:
+                    # 创建掩码覆盖图
+                    overlay = image.copy()
+                    
+                    # 红色标注篡改区域
+                    overlay[mask > 127] = [0, 0, 255]
+                    
+                    # 半透明混合
+                    result_image = cv2.addWeighted(image, 0.7, overlay, 0.3, 0)
+                    
+                    # 创建画布
+                    canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
+                    canvas[:h, :w] = image
+                    canvas[:, w:w+20] = 200
+                    canvas[:h, w+20:] = result_image
+                    
+                    # 添加文字标注
+                    self._add_text_annotations(canvas[:, w+20:], result, true_label, h, w)
+                    
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    cv2.imwrite(output_path, canvas)
+                    return True
             
-            # 绘制篡改区域
+            # 方式3: 使用 tamper_regions 绘制矩形
             tamper_regions = result.get('tamper_regions')
-            if tamper_regions:
+            if tamper_regions and len(tamper_regions) > 0:
+                print(f"  使用篡改区域坐标绘制 (共{len(tamper_regions)}个区域)", flush=True)
+                pred_image = image.copy()
+                
                 for region in tamper_regions:
                     x1, y1 = region['left_top']
                     x2, y2 = region['right_bottom']
                     cv2.rectangle(pred_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            
-            # 添加文字
-            is_tampered = result.get('is_tampered', False)
-            confidence = result.get('confidence', 0)
-            
-            pred_text = "TAMPERED" if is_tampered else "GOOD"
-            color = (0, 0, 255) if is_tampered else (0, 255, 0)
-            cv2.putText(pred_image, f"Pred: {pred_text}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-            cv2.putText(pred_image, f"Conf: {confidence:.3f}", (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            
-            if true_label is not None:
-                true_text = "TAMPERED" if true_label else "GOOD"
-                true_color = (0, 100, 255) if true_label else (100, 255, 0)
-                cv2.putText(pred_image, f"True: {true_text}", (10, 90), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, true_color, 2)
                 
-                pred_label = 1 if is_tampered else 0
-                is_correct = pred_label == true_label
-                correct_text = "CORRECT" if is_correct else "WRONG"
-                correct_color = (0, 255, 0) if is_correct else (0, 0, 255)
-                cv2.putText(pred_image, correct_text, (10, 120), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, correct_color, 2)
+                # 添加文字标注
+                self._add_text_annotations(pred_image, result, true_label, h, w)
+                
+                # 创建画布
+                canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
+                canvas[:h, :w] = image
+                canvas[:, w:w+20] = 200
+                canvas[:h, w+20:] = pred_image
+                
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                cv2.imwrite(output_path, canvas)
+                return True
             
+            # 方式4: 没有篡改区域，只显示原图 + 预测结果文字
+            print(f"  无篡改区域标注，显示原图 + 预测结果", flush=True)
+            pred_image = image.copy()
+            self._add_text_annotations(pred_image, result, true_label, h, w)
+            
+            canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
+            canvas[:h, :w] = image
+            canvas[:, w:w+20] = 200
             canvas[:h, w+20:] = pred_image
             
-            # 确保目录存在
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             cv2.imwrite(output_path, canvas)
             return True
+            
         except Exception as e:
-            print(f"保存图片失败: {e}")
+            print(f"  保存图片失败: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             return False
+    
+    def _add_text_annotations(self, image: np.ndarray, result: Dict, 
+                              true_label: int, h: int, w: int):
+        """添加文字标注"""
+        is_tampered = result.get('is_tampered', False)
+        confidence = result.get('confidence', 0)
+        
+        pred_text = "TAMPERED" if is_tampered else "GOOD"
+        color = (0, 0, 255) if is_tampered else (0, 255, 0)
+        
+        cv2.putText(image, f"Pred: {pred_text}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        cv2.putText(image, f"Conf: {confidence:.3f}", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        
+        if true_label is not None:
+            true_text = "TAMPERED" if true_label else "GOOD"
+            true_color = (0, 100, 255) if true_label else (100, 255, 0)
+            cv2.putText(image, f"True: {true_text}", (10, 90), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, true_color, 2)
+            
+            pred_label = 1 if is_tampered else 0
+            is_correct = pred_label == true_label
+            correct_text = "CORRECT" if is_correct else "WRONG"
+            correct_color = (0, 255, 0) if is_correct else (0, 0, 255)
+            cv2.putText(image, correct_text, (10, 120), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, correct_color, 2)
     
     def test_batch(self, data_dir: str, algorithm: str = "ml", 
                    save_images: bool = False, dataset_name: str = None) -> Dict:
