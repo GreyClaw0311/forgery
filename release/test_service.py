@@ -395,6 +395,152 @@ class TamperDetectionTester:
             'tp': tp, 'tn': tn, 'fp': fp, 'fn': fn
         }
     
+    def test_single(self, image_path: str, algorithm: str = "ml", save_image: bool = True,
+                    mask_path: str = None):
+        """
+        单张图片测试
+        
+        Args:
+            image_path: 图片路径
+            algorithm: 算法名称
+            save_image: 是否保存结果图片
+            mask_path: mask 路径 (用于判断真实标签)
+        """
+        print("=" * 60)
+        print("单张图片测试")
+        print("=" * 60)
+        
+        if not os.path.exists(image_path):
+            print(f"✗ 图片不存在: {image_path}")
+            return
+        
+        print(f"图片: {image_path}")
+        print(f"算法: {algorithm}")
+        print("-" * 60)
+        
+        # 判断真实标签
+        true_label = None
+        if mask_path and os.path.exists(mask_path):
+            true_label = self.check_mask_label(mask_path)
+            print(f"真实标签: {'篡改' if true_label else '正常'}")
+        
+        # 检测
+        start_time = time.time()
+        result = self.detect_single(image_path, algorithm)
+        total_time = time.time() - start_time
+        
+        # 打印结果
+        print(f"\n检测结果:")
+        status = result.get('status', '')
+        print(f"  状态码: {status}")
+        
+        if status.startswith('0001'):
+            is_tampered = result.get('is_tampered', False)
+            confidence = result.get('confidence', 0)
+            processing_time = result.get('processing_time', 0)
+            
+            print(f"  是否篡改: {'是' if is_tampered else '否'}")
+            print(f"  置信度: {confidence:.4f}")
+            print(f"  处理时间: {processing_time*1000:.2f}ms")
+            print(f"  请求时间: {result.get('request_time', 0)*1000:.2f}ms")
+            
+            # 判断正确性
+            if true_label is not None:
+                pred_label = 1 if is_tampered else 0
+                is_correct = pred_label == true_label
+                print(f"  判断: {'✓ 正确' if is_correct else '✗ 错误'}")
+            
+            # 篡改区域
+            tamper_regions = result.get('tamper_regions')
+            if tamper_regions:
+                print(f"  篡改区域数: {len(tamper_regions)}")
+                for i, region in enumerate(tamper_regions[:3]):
+                    print(f"    区域{i+1}: {region}")
+            
+            # 保存结果图片
+            if save_image:
+                output_path = os.path.join(self.output_dir, 'images', 
+                    f"{os.path.splitext(os.path.basename(image_path))[0]}_{algorithm}_result.jpg")
+                self._save_result_image(image_path, result, output_path, true_label, mask_path)
+                print(f"\n  结果图片: {output_path}")
+            
+            return {
+                'success': True,
+                'is_tampered': is_tampered,
+                'confidence': confidence,
+                'processing_time': processing_time,
+                'status': status
+            }
+        else:
+            # 错误情况
+            error_msg = status if status else result.get('message', 'Unknown error')
+            print(f"  ✗ 检测失败: {error_msg}")
+            return {
+                'success': False,
+                'error': error_msg,
+                'status': status
+            }
+    
+    def _save_result_image(self, image_path: str, result: Dict, output_path: str,
+                           true_label: int = None, mask_path: str = None):
+        """保存检测结果图片"""
+        try:
+            image = cv2.imread(image_path)
+            if image is None:
+                return False
+            
+            h, w = image.shape[:2]
+            
+            # 创建画布 (原图 + 结果)
+            canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
+            canvas[:h, :w] = image
+            canvas[:, w:w+20] = 200
+            
+            # 创建结果图
+            pred_image = image.copy()
+            
+            # 绘制篡改区域
+            tamper_regions = result.get('tamper_regions')
+            if tamper_regions:
+                for region in tamper_regions:
+                    x1, y1 = region['left_top']
+                    x2, y2 = region['right_bottom']
+                    cv2.rectangle(pred_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            
+            # 添加文字
+            is_tampered = result.get('is_tampered', False)
+            confidence = result.get('confidence', 0)
+            
+            pred_text = "TAMPERED" if is_tampered else "GOOD"
+            color = (0, 0, 255) if is_tampered else (0, 255, 0)
+            cv2.putText(pred_image, f"Pred: {pred_text}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            cv2.putText(pred_image, f"Conf: {confidence:.3f}", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            
+            if true_label is not None:
+                true_text = "TAMPERED" if true_label else "GOOD"
+                true_color = (0, 100, 255) if true_label else (100, 255, 0)
+                cv2.putText(pred_image, f"True: {true_text}", (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, true_color, 2)
+                
+                pred_label = 1 if is_tampered else 0
+                is_correct = pred_label == true_label
+                correct_text = "CORRECT" if is_correct else "WRONG"
+                correct_color = (0, 255, 0) if is_correct else (0, 0, 255)
+                cv2.putText(pred_image, correct_text, (10, 120), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, correct_color, 2)
+            
+            canvas[:h, w+20:] = pred_image
+            
+            # 确保目录存在
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            cv2.imwrite(output_path, canvas)
+            return True
+        except Exception as e:
+            print(f"保存图片失败: {e}")
+            return False
+    
     def test_batch(self, data_dir: str, algorithm: str = "ml", 
                    save_images: bool = False, dataset_name: str = None) -> Dict:
         """
