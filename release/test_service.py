@@ -308,14 +308,26 @@ class TamperDetectionTester:
             if response.status_code == 200:
                 result = response.json()
                 result['request_time'] = request_time
+                # 打印第一个请求的完整响应用于调试
+                if not hasattr(self, '_first_request_logged'):
+                    self._first_request_logged = True
+                    print(f"\n[DEBUG] 第一个请求响应:")
+                    print(f"  status: '{result.get('status')}'")
+                    print(f"  status.startswith('0001'): {str(result.get('status', '')).startswith('0001')}")
+                    print(f"  is_tampered: {result.get('is_tampered')}")
+                    print(f"  confidence: {result.get('confidence')}")
+                    print(f"  processing_time: {result.get('processing_time')}")
                 return result
             else:
-                return {
-                    'status': 'error',
-                    'message': f"HTTP {response.status_code}: {response.text}",
+                error_result = {
+                    'status': f'HTTP_{response.status_code}',
+                    'message': response.text[:500],
                     'request_time': request_time
                 }
+                print(f"\n[ERROR] HTTP {response.status_code}: {response.text[:200]}")
+                return error_result
         except Exception as e:
+            print(f"\n[ERROR] 请求异常: {e}")
             return {
                 'status': 'error',
                 'message': str(e),
