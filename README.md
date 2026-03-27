@@ -14,9 +14,12 @@
 - ✅ **多算法支持**: ELA、DCT、Fusion、ML 四种检测算法
 - ✅ **像素级检测**: ML 算法支持像素级篡改区域定位
 - ✅ **篡改区域坐标**: 输出篡改区域矩形坐标
+- ✅ **彩色热力图**: ELA/DCT/Fusion 输出彩色热力图，直观展示篡改区域
 - ✅ **GPU 加速**: 支持 PyTorch GPU 加速推理
 - ✅ **REST API**: FastAPI 服务，易于集成
-- ✅ **测试工具**: 完整的单张/批量测试脚本
+- ✅ **完整日志**: 支持日志级别配置和日志轮转
+- ✅ **并发支持**: 多 Worker 部署，支持高并发
+- ✅ **测试工具**: 完整的单张/批量测试脚本，自动保存结果图片
 
 ---
 
@@ -129,23 +132,69 @@ release/models/
 
 ```bash
 cd release
+
+# 默认启动 (单进程)
 python server_forgrey.py
+
+# 指定端口和主机
+python server_forgrey.py --host 0.0.0.0 --port 8000
+
+# 启用多 Worker 并发 (推荐生产环境)
+python server_forgrey.py --workers 4
+
+# 指定日志级别
+python server_forgrey.py --log-level debug
+
+# 指定日志文件
+python server_forgrey.py --log-file /var/log/forgery/server.log
 ```
+
+**服务启动参数:**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| --host | 0.0.0.0 | 服务地址 |
+| --port | 8000 | 服务端口 |
+| --workers | 1 | Worker 数量 (并发支持) |
+| --log-level | INFO | 日志级别 (DEBUG/INFO/WARNING/ERROR) |
+| --log-file | None | 日志文件路径 (支持日志轮转) |
 
 服务启动后访问: http://localhost:8000
 
 ### 4. 测试服务
 
 ```bash
-# 检查服务状态
+# 单张测试
 python test_service.py --mode single --image test.jpg --algorithm ml
 
-# 批量测试
-python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm ml --save_images
+# 单张测试 (不保存图片)
+python test_service.py --mode single --image test.jpg --algorithm ml --no_save_images
 
-# 多算法对比
+# 批量测试 (默认保存图片)
+python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm ml
+
+# 批量测试 (不保存图片)
+python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm ml --no_save_images
+
+# 全算法对比测试
 python test_service.py --mode compare --data_dir ./data/tamper_data
+
+# 采集发版数据
+python test_service.py --mode release --data_dir ./test --dataset_name TestSet
 ```
+
+**测试脚本参数:**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| --mode | single | 测试模式 (single/batch/compare/release) |
+| --image | - | 单张测试图片路径 |
+| --data_dir | ./test | 数据目录 |
+| --algorithm | ml | 算法 (ela/dct/fusion/ml/all) |
+| --server | http://localhost:8000 | 服务地址 |
+| --output | ./test_results | 输出目录 |
+| --save_images | True | 保存结果图片 (默认开启) |
+| --no_save_images | - | 不保存结果图片 |
 
 ---
 
@@ -228,8 +277,9 @@ curl -X POST "http://localhost:8000/tamper_detection/v1/tamper_detect_img" \
 | is_tampered | boolean | 是否篡改 |
 | confidence | float | 最终置信度 |
 | gb_confidence | float | GB 分类器置信度 |
-| mask_base64 | string | 篡改区域掩码 Base64 |
-| marked_image_base64 | string | 标记后的图片 Base64 |
+| mask_base64 | string | 篡改区域掩码 Base64 (二值图) |
+| heatmap_base64 | string | 彩色热力图 Base64 (仅 ELA/DCT/Fusion) |
+| marked_image_base64 | string | 标记后的图片 Base64 (原图+篡改标注) |
 | tamper_regions | array | 篡改区域坐标列表 |
 | processing_time | float | 处理时间 (秒) |
 
@@ -459,6 +509,24 @@ python train/pixel_segmentation/train_pixel_fast.py \
 ---
 
 ## 更新日志
+
+### 2026-03-27
+
+- ✅ **服务端修复与增强**
+  - ELA/DCT/Fusion 算法输出彩色热力图 (COLORMAP_JET)
+  - ML 算法正确标注篡改区域 (轮廓 + 矩形框)
+  - 新增 `heatmap_base64` 字段返回彩色热力图
+- ✅ **测试脚本增强**
+  - 批量测试默认保存结果图片
+  - 支持彩色热力图显示
+  - 新增 `--no_save_images` 参数控制图片保存
+- ✅ **日志管理**
+  - 支持日志级别配置 (DEBUG/INFO/WARNING/ERROR)
+  - 支持日志文件输出
+  - 支持日志轮转 (10MB × 5 个文件)
+- ✅ **并发支持**
+  - 支持多 Worker 部署 (`--workers` 参数)
+  - uvicorn 多进程模式
 
 ### 2026-03-26
 

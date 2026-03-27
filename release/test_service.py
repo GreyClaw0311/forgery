@@ -2,31 +2,47 @@
 """
 图像篡改检测服务测试脚本 - 增强版
 
-功能:
-1. 单张图片测试
-2. 批量图片测试
-3. 多算法对比测试
-4. 生成完整测试报告 (效果 + 性能 + 资源消耗)
-5. 生成发版规格数据
-6. 保存推理结果图片
-
-数据集结构:
-|-- test
-|   |-- images
-|   `-- masks
-
-使用方法:
-    # 单张测试
+用法:
+    # 单张图片测试
     python test_service.py --mode single --image test.jpg --algorithm ml
     
-    # 批量测试
+    # 单张测试并保存结果图片
+    python test_service.py --mode single --image test.jpg --algorithm ml --save_images
+    
+    # 批量测试 (默认保存图片)
     python test_service.py --mode batch --data_dir ./test --algorithm ml
     
-    # 全算法对比测试 (采集发版数据)
-    python test_service.py --mode release --data_dir ./test --dataset_name Forgery-Internal-TestSet
+    # 批量测试 (不保存图片)
+    python test_service.py --mode batch --data_dir ./test --algorithm ml --no_save_images
     
-    # 指定多个数据集测试
-    python test_service.py --mode release --data_dirs ./test1,./test2 --dataset_names Dataset1,Dataset2
+    # 全算法对比测试
+    python test_service.py --mode compare --data_dir ./test
+    
+    # 采集发版数据
+    python test_service.py --mode release --data_dir ./test --dataset_name TestSet
+
+功能:
+    1. 单张图片测试
+    2. 批量图片测试 (默认保存图片结果)
+    3. 多算法对比测试
+    4. 生成完整测试报告 (效果 + 性能 + 资源消耗)
+    5. 生成发版规格数据
+    6. 保存推理结果图片 (彩色热力图 + 篡改区域标注)
+
+数据集结构:
+    |-- test
+    |   |-- images
+    |   `-- masks
+
+输出结果:
+    |-- test_results
+    |   |-- images/              # 结果图片
+    |   |   |-- xxx_ml_result.jpg      # ML 结果
+    |   |   |-- xxx_ela_result.jpg     # ELA 结果 (彩色热力图)
+    |   |   |-- xxx_dct_result.jpg     # DCT 结果 (彩色热力图)
+    |   |   `-- xxx_fusion_result.jpg  # Fusion 结果 (彩色热力图)
+    |   |-- test_report_*.json   # 测试报告
+    |   `-- compare_report_*.json # 对比报告
 """
 
 import os
@@ -340,13 +356,17 @@ class TamperDetectionTester:
             return 1
     
     def decode_mask_base64(self, mask_base64: str) -> np.ndarray:
-        """解码 Base64 掩码"""
+        """解码 Base64 掩码/图片"""
         if not mask_base64:
             return None
         
         try:
             mask_bytes = base64.b64decode(mask_base64)
-            mask = cv2.imdecode(np.frombuffer(mask_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+            # 尝试读取彩色图
+            mask = cv2.imdecode(np.frombuffer(mask_bytes, np.uint8), cv2.IMREAD_COLOR)
+            if mask is None:
+                # 尝试读取灰度图
+                mask = cv2.imdecode(np.frombuffer(mask_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
             return mask
         except:
             return None
@@ -354,6 +374,15 @@ class TamperDetectionTester:
     def compute_pixel_metrics(self, pred_mask: np.ndarray, true_mask: np.ndarray, 
                               threshold: int = 127) -> Dict:
         """计算像素级指标"""
+        if pred_mask is None or true_mask is None:
+            return None
+        
+        # 确保都是灰度图
+        if len(pred_mask.shape) == 3:
+            pred_mask = cv2.cvtColor(pred_mask, cv2.COLOR_BGR2GRAY)
+        if len(true_mask.shape) == 3:
+            true_mask = cv2.cvtColor(true_mask, cv2.COLOR_BGR2GRAY)
+        
         if pred_mask.shape != true_mask.shape:
             pred_mask = cv2.resize(pred_mask, (true_mask.shape[1], true_mask.shape[0]))
         
@@ -479,7 +508,7 @@ class TamperDetectionTester:
     
     def _save_result_image(self, image_path: str, result: Dict, output_path: str,
                            true_label: int = None, mask_path: str = None):
-        """保存检测结果图片"""
+        """保存检测结果图片 (彩色热力图 + 篡改标注)"""
         try:
             image = cv2.imread(image_path)
             if image is None:
@@ -488,20 +517,16 @@ class TamperDetectionTester:
             
             h, w = image.shape[:2]
             
-            # 方式1: 使用服务返回的 marked_image_base64 (优先)
+            # 优先使用服务返回的 marked_image_base64 (有热力图叠加的标注图)
             marked_image_base64 = result.get('marked_image_base64')
             if marked_image_base64:
                 print(f"  使用服务返回的标注图片", flush=True)
                 marked_image = self.decode_mask_base64(marked_image_base64)
                 if marked_image is not None:
-                    # 转换为彩色图（如果是灰度图）
-                    if len(marked_image.shape) == 2:
-                        marked_image = cv2.cvtColor(marked_image, cv2.COLOR_GRAY2BGR)
-                    
                     # 创建画布 (原图 + 标注图)
                     canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
                     canvas[:h, :w] = image
-                    canvas[:, w:w+20] = 200
+                    canvas[:, w:w+20] = 200  # 分隔线
                     canvas[:h, w+20:] = marked_image
                     
                     # 添加文字标注
@@ -511,12 +536,39 @@ class TamperDetectionTester:
                     cv2.imwrite(output_path, canvas)
                     return True
             
-            # 方式2: 使用服务返回的 mask_base64 创建掩码覆盖
+            # 其次使用 heatmap_base64 (彩色热力图，用于 ela/dct/fusion)
+            heatmap_base64 = result.get('heatmap_base64')
+            if heatmap_base64:
+                print(f"  使用服务返回的彩色热力图", flush=True)
+                heatmap = self.decode_mask_base64(heatmap_base64)
+                if heatmap is not None:
+                    # 确保是彩色图
+                    if len(heatmap.shape) == 2:
+                        heatmap = cv2.applyColorMap((heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET)
+                    
+                    # 创建画布 (原图 + 热力图)
+                    canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
+                    canvas[:h, :w] = image
+                    canvas[:, w:w+20] = 200
+                    canvas[:h, w+20:] = heatmap
+                    
+                    # 添加文字标注
+                    self._add_text_annotations(canvas[:, w+20:], result, true_label, h, w)
+                    
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    cv2.imwrite(output_path, canvas)
+                    return True
+            
+            # 再次使用 mask_base64 (二值掩码)
             mask_base64 = result.get('mask_base64')
             if mask_base64:
                 print(f"  使用服务返回的掩码图片", flush=True)
                 mask = self.decode_mask_base64(mask_base64)
                 if mask is not None:
+                    # 确保是灰度图
+                    if len(mask.shape) == 3:
+                        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                    
                     # 创建掩码覆盖图
                     overlay = image.copy()
                     
@@ -525,6 +577,15 @@ class TamperDetectionTester:
                     
                     # 半透明混合
                     result_image = cv2.addWeighted(image, 0.7, overlay, 0.3, 0)
+                    
+                    # 绘制轮廓和矩形
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(result_image, contours, -1, (0, 0, 255), 2)
+                    for contour in contours:
+                        area = cv2.contourArea(contour)
+                        if area >= 100:
+                            x, y, cw, ch = cv2.boundingRect(contour)
+                            cv2.rectangle(result_image, (x, y), (x + cw, y + ch), (0, 255, 0), 2)
                     
                     # 创建画布
                     canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
@@ -539,7 +600,7 @@ class TamperDetectionTester:
                     cv2.imwrite(output_path, canvas)
                     return True
             
-            # 方式3: 使用 tamper_regions 绘制矩形
+            # 最后使用 tamper_regions 绘制矩形
             tamper_regions = result.get('tamper_regions')
             if tamper_regions and len(tamper_regions) > 0:
                 print(f"  使用篡改区域坐标绘制 (共{len(tamper_regions)}个区域)", flush=True)
@@ -549,6 +610,8 @@ class TamperDetectionTester:
                     x1, y1 = region['left_top']
                     x2, y2 = region['right_bottom']
                     cv2.rectangle(pred_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                    cv2.putText(pred_image, "TAMPERED", (x1, y1-5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                 
                 # 添加文字标注
                 self._add_text_annotations(pred_image, result, true_label, h, w)
@@ -563,7 +626,7 @@ class TamperDetectionTester:
                 cv2.imwrite(output_path, canvas)
                 return True
             
-            # 方式4: 没有篡改区域，只显示原图 + 预测结果文字
+            # 没有篡改区域，只显示原图 + 预测结果文字
             print(f"  无篡改区域标注，显示原图 + 预测结果", flush=True)
             pred_image = image.copy()
             self._add_text_annotations(pred_image, result, true_label, h, w)
@@ -588,6 +651,7 @@ class TamperDetectionTester:
         """添加文字标注"""
         is_tampered = result.get('is_tampered', False)
         confidence = result.get('confidence', 0)
+        algorithm = result.get('algorithm', 'unknown')
         
         pred_text = "TAMPERED" if is_tampered else "GOOD"
         color = (0, 0, 255) if is_tampered else (0, 255, 0)
@@ -596,29 +660,31 @@ class TamperDetectionTester:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         cv2.putText(image, f"Conf: {confidence:.3f}", (10, 60), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        cv2.putText(image, f"Algo: {algorithm}", (10, 90), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
         
         if true_label is not None:
             true_text = "TAMPERED" if true_label else "GOOD"
             true_color = (0, 100, 255) if true_label else (100, 255, 0)
-            cv2.putText(image, f"True: {true_text}", (10, 90), 
+            cv2.putText(image, f"True: {true_text}", (10, 120), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, true_color, 2)
             
             pred_label = 1 if is_tampered else 0
             is_correct = pred_label == true_label
             correct_text = "CORRECT" if is_correct else "WRONG"
             correct_color = (0, 255, 0) if is_correct else (0, 0, 255)
-            cv2.putText(image, correct_text, (10, 120), 
+            cv2.putText(image, correct_text, (10, 150), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, correct_color, 2)
     
     def test_batch(self, data_dir: str, algorithm: str = "ml", 
-                   save_images: bool = False, dataset_name: str = None) -> Dict:
+                   save_images: bool = True, dataset_name: str = None) -> Dict:
         """
         批量图片测试
         
         Args:
             data_dir: 数据目录
             algorithm: 算法名称
-            save_images: 是否保存结果图片
+            save_images: 是否保存结果图片 (默认 True)
             dataset_name: 数据集名称
         """
         data_dir = os.path.abspath(data_dir)
@@ -661,6 +727,11 @@ class TamperDetectionTester:
         
         tampered_confidences = []
         normal_confidences = []
+        
+        # 创建图片保存目录
+        if save_images:
+            images_output_dir = os.path.join(self.output_dir, 'images', algorithm)
+            os.makedirs(images_output_dir, exist_ok=True)
         
         start_time = time.time()
         
@@ -723,11 +794,18 @@ class TamperDetectionTester:
                         pred_mask = self.decode_mask_base64(pred_mask_base64)
                         if pred_mask is not None:
                             pixel_metrics = self.compute_pixel_metrics(pred_mask, true_mask)
-                            pixel_metrics_list.append(pixel_metrics)
-                            total_pixel_tp += pixel_metrics['tp']
-                            total_pixel_tn += pixel_metrics['tn']
-                            total_pixel_fp += pixel_metrics['fp']
-                            total_pixel_fn += pixel_metrics['fn']
+                            if pixel_metrics:
+                                pixel_metrics_list.append(pixel_metrics)
+                                total_pixel_tp += pixel_metrics['tp']
+                                total_pixel_tn += pixel_metrics['tn']
+                                total_pixel_fp += pixel_metrics['fp']
+                                total_pixel_fn += pixel_metrics['fn']
+                
+                # 保存结果图片 (默认保存)
+                if save_images:
+                    output_name = f"{os.path.splitext(image_file)[0]}_{algorithm}_result.jpg"
+                    output_path = os.path.join(images_output_dir, output_name)
+                    self._save_result_image(image_path, result, output_path, true_label, mask_path)
                 
                 results.append({
                     'image': image_file,
@@ -738,7 +816,6 @@ class TamperDetectionTester:
                 })
             else:
                 # 错误状态码: 0000/0002/0004/0007
-                # 服务返回的错误信息在 status 字段中，格式: "XXXX:错误描述"
                 error_msg = status if status else result.get('message', 'Unknown error')
                 
                 # 打印前几个错误的详细信息
@@ -825,6 +902,7 @@ class TamperDetectionTester:
                 'tested_images': len(results),
                 'tampered_images': tampered_count,
                 'good_images': good_count,
+                'save_images': save_images,
             },
             'performance': {
                 'total_time': round(total_time, 2),
@@ -865,6 +943,9 @@ class TamperDetectionTester:
             json.dump(report, f, indent=2, ensure_ascii=False)
         print(f"\n✓ 测试报告已保存: {report_path}")
         
+        if save_images:
+            print(f"✓ 结果图片已保存: {images_output_dir}")
+        
         return report
     
     def _print_report(self, report: Dict):
@@ -879,6 +960,7 @@ class TamperDetectionTester:
         print(f"  算法: {info['algorithm']}")
         print(f"  时间: {info['test_time']}")
         print(f"  图片: {info['tested_images']}/{info['total_images']} (篡改:{info['tampered_images']}, 正常:{info['good_images']})")
+        print(f"  保存图片: {'是' if info.get('save_images', False) else '否'}")
         
         cls = report['classification_metrics']
         print(f"\n【分类指标】")
@@ -917,7 +999,7 @@ class TamperDetectionTester:
                 print(f"  GPU显存峰值: {res['gpu_memory_allocated_max_gb']:.2f}GB")
     
     def compare_algorithms(self, data_dir: str, algorithms: List[str] = None, 
-                          save_images: bool = False, dataset_name: str = None) -> Dict:
+                          save_images: bool = True, dataset_name: str = None) -> Dict:
         """多算法对比测试"""
         if algorithms is None:
             algorithms = ['ela', 'dct', 'fusion', 'ml']
@@ -1004,7 +1086,7 @@ class TamperDetectionTester:
             
             for algo in algorithms:
                 print(f"\n  >>> 算法: {algo}")
-                report = self.test_batch(data_dir, algo, False, dataset_name)
+                report = self.test_batch(data_dir, algo, True, dataset_name)
                 all_results[dataset_name][algo] = report
         
         # 生成汇总报告
@@ -1112,10 +1194,15 @@ def main():
                         help='服务地址')
     parser.add_argument('--output', type=str, default='./test_results',
                         help='输出目录')
-    parser.add_argument('--save_images', action='store_true',
-                        help='保存结果图片')
+    parser.add_argument('--save_images', action='store_true', default=True,
+                        help='保存结果图片 (默认开启)')
+    parser.add_argument('--no_save_images', action='store_true',
+                        help='不保存结果图片')
     
     args = parser.parse_args()
+    
+    # 是否保存图片
+    save_images = not args.no_save_images
     
     # 创建测试器
     tester = TamperDetectionTester(args.server, args.output)
@@ -1130,17 +1217,17 @@ def main():
         if not args.image:
             print("✗ 请指定 --image 参数")
             sys.exit(1)
-        tester.test_single(args.image, args.algorithm, args.save_images)
+        tester.test_single(args.image, args.algorithm, save_images)
     
     elif args.mode == 'batch':
         algorithms = ['ela', 'dct', 'fusion', 'ml'] if args.algorithm == 'all' else [args.algorithm]
         if len(algorithms) == 1:
-            tester.test_batch(args.data_dir, algorithms[0], args.save_images, args.dataset_name)
+            tester.test_batch(args.data_dir, algorithms[0], save_images, args.dataset_name)
         else:
-            tester.compare_algorithms(args.data_dir, algorithms, args.save_images, args.dataset_name)
+            tester.compare_algorithms(args.data_dir, algorithms, save_images, args.dataset_name)
     
     elif args.mode == 'compare':
-        tester.compare_algorithms(args.data_dir, None, args.save_images, args.dataset_name)
+        tester.compare_algorithms(args.data_dir, None, save_images, args.dataset_name)
     
     elif args.mode == 'release':
         data_dirs = args.data_dirs.split(',') if args.data_dirs else [args.data_dir]

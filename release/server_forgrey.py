@@ -2,24 +2,50 @@
 """
 图像篡改检测服务
 
-FastAPI 服务，提供 REST API 接口
+用法:
+    # 启动服务 (默认单进程)
+    python server_forgrey.py
+    
+    # 指定端口和主机
+    python server_forgrey.py --host 0.0.0.0 --port 8000
+    
+    # 启用多 worker 并发
+    python server_forgrey.py --workers 4
+    
+    # 指定日志级别
+    python server_forgrey.py --log-level debug
+    
+    # 指定日志文件
+    python server_forgrey.py --log-file /var/log/forgery/server.log
+
+功能:
+    1. GB 分类器前置检测
+    2. 多算法支持 (ela/dct/fusion/ml)
+    3. 像素级篡改区域定位
+    4. 篡改区域坐标输出
+    5. 彩色热力图输出
+    6. 完整日志管理
+    7. 多 worker 并发支持
 
 流程:
-1. GB 分类器判断图片是否篡改 (前置检测)
-2. 如果篡改，使用指定算法定位篡改区域
+    1. GB 分类器判断图片是否篡改 (前置检测)
+    2. 如果篡改，使用指定算法定位篡改区域
+    3. 输出彩色热力图和篡改区域标注
 
 入参:
-- image_base64: 图片 Base64 编码
-- algorithm: 算法名称 (ela/dct/fusion/ml)
+    - image_base64: 图片 Base64 编码
+    - algorithm: 算法名称 (ela/dct/fusion/ml)
+    - skip_gb: 跳过 GB 前置检测 (可选)
 
 出参:
-- status: 状态码
-- is_tampered: 是否篡改
-- confidence: 置信度
-- gb_confidence: GB 分类器置信度
-- mask_base64: 篡改区域掩码 Base64
-- marked_image_base64: 原图标记篡改区域图片 Base64
-- tamper_regions: 篡改区域矩形坐标列表
+    - status: 状态码
+    - is_tampered: 是否篡改
+    - confidence: 置信度
+    - gb_confidence: GB 分类器置信度
+    - mask_base64: 篡改区域掩码 Base64 (二值图)
+    - heatmap_base64: 彩色热力图 Base64 (仅 ela/dct/fusion)
+    - marked_image_base64: 原图标记篡改区域图片 Base64
+    - tamper_regions: 篡改区域矩形坐标列表
 """
 
 import os
@@ -28,8 +54,12 @@ import base64
 import pickle
 import tempfile
 import time
+import argparse
+import logging
 from datetime import datetime
 from typing import Optional, List, Dict
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -38,6 +68,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+import uvicorn
 
 # 项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -59,11 +90,65 @@ STATUS_CODES = {
     "0007": "请求参数内容错误或为空."
 }
 
+# 日志配置
+logger = logging.getLogger("forgery_server")
+
+
+def setup_logging(log_level: str = "INFO", log_file: str = None):
+    """
+    配置日志系统
+    
+    Args:
+        log_level: 日志级别 (DEBUG/INFO/WARNING/ERROR)
+        log_file: 日志文件路径 (可选)
+    """
+    # 日志格式
+    log_format = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    
+    # 日志级别
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    # 创建 formatter
+    formatter = logging.Formatter(log_format, date_format)
+    
+    # 控制台处理器
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
+    
+    # 配置根日志
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    root_logger.addHandler(console_handler)
+    
+    # 文件处理器 (如果指定了日志文件)
+    if log_file:
+        # 确保日志目录存在
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        
+        # 使用 RotatingFileHandler 支持日志轮转
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,  # 10MB
+            backupCount=5,
+            encoding='utf-8'
+        )
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+        logger.info(f"日志文件: {log_file}")
+    
+    logger.info(f"日志级别: {log_level}")
+
+
 # 创建 FastAPI 应用
 app = FastAPI(
     title="图像篡改检测服务",
     description="检测图像是否经过拼接、复制粘贴、修饰等篡改操作\n\n流程: GB分类器(前置) → 区域定位算法",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 # 初始化检测器
@@ -85,18 +170,18 @@ def load_gb_classifier():
     config_path = os.path.join(PROJECT_ROOT, 'release', 'models', 'gb_classifier', 'config.json')
     
     if not os.path.exists(model_path):
-        print(f"警告: GB 分类器模型不存在: {model_path}")
+        logger.warning(f"GB 分类器模型不存在: {model_path}")
         return False
     
     try:
         with open(model_path, 'rb') as f:
             gb_model = pickle.load(f)
-        print(f"GB 分类器已加载: {model_path}")
+        logger.info(f"GB 分类器已加载: {model_path}")
         
         if os.path.exists(scaler_path):
             with open(scaler_path, 'rb') as f:
                 gb_scaler = pickle.load(f)
-            print(f"GB 标准化器已加载: {scaler_path}")
+            logger.info(f"GB 标准化器已加载: {scaler_path}")
         
         # 加载配置
         if os.path.exists(config_path):
@@ -104,11 +189,11 @@ def load_gb_classifier():
             with open(config_path, 'r') as f:
                 config = json.load(f)
                 gb_threshold = config.get('optimal_threshold', 0.5)
-                print(f"GB 最优阈值: {gb_threshold}")
+                logger.info(f"GB 最优阈值: {gb_threshold}")
         
         return True
     except Exception as e:
-        print(f"GB 分类器加载失败: {e}")
+        logger.error(f"GB 分类器加载失败: {e}")
         return False
 
 
@@ -147,8 +232,9 @@ def gb_classify(image_path: str) -> Dict:
             proba = gb_model.predict_proba(features_scaled)[0, 1]
             result['is_tampered'] = bool(proba > gb_threshold)
             result['confidence'] = float(proba)
+            logger.debug(f"GB 分类结果: is_tampered={result['is_tampered']}, confidence={result['confidence']:.4f}")
     except Exception as e:
-        print(f"GB 分类错误: {e}")
+        logger.error(f"GB 分类错误: {e}")
     
     return result
 
@@ -157,6 +243,7 @@ def get_ela_detector():
     """获取 ELA 检测器"""
     if 'ela' not in detectors:
         detectors['ela'] = ELADetector()
+        logger.debug("ELA 检测器已初始化")
     return detectors['ela']
 
 
@@ -164,6 +251,7 @@ def get_dct_detector():
     """获取 DCT 检测器"""
     if 'dct' not in detectors:
         detectors['dct'] = DCTBlockDetector()
+        logger.debug("DCT 检测器已初始化")
     return detectors['dct']
 
 
@@ -171,6 +259,7 @@ def get_fusion_detector():
     """获取融合检测器"""
     if 'fusion' not in detectors:
         detectors['fusion'] = AdaptiveFusion()
+        logger.debug("融合检测器已初始化")
     return detectors['fusion']
 
 
@@ -178,6 +267,7 @@ def get_ml_detector():
     """获取 ML 检测器"""
     if 'ml' not in detectors:
         detectors['ml'] = MLDetectorGPU()
+        logger.debug("ML 检测器已初始化")
     return detectors['ml']
 
 
@@ -195,6 +285,7 @@ class DetectionResponse(BaseModel):
     confidence: float                        # 置信度 (0-1)
     gb_confidence: Optional[float]           # GB 分类器置信度
     mask_base64: Optional[str]               # 篡改区域掩码 Base64
+    heatmap_base64: Optional[str]            # 彩色热力图 Base64
     marked_image_base64: Optional[str]       # 原图标记篡改区域图片 Base64
     tamper_regions: Optional[List[TamperRegion]]  # 篡改区域矩形坐标列表
     algorithm: str                           # 使用的算法
@@ -219,6 +310,7 @@ class ErrorResponse(BaseModel):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """全局异常处理 - 返回0000状态码"""
+    logger.error(f"全局异常: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
         content={
@@ -231,6 +323,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """参数验证异常 - 返回0004状态码"""
+    logger.warning(f"参数验证错误: {exc}")
     return JSONResponse(
         status_code=400,
         content={
@@ -286,9 +379,13 @@ async def tamper_detect_img(
     - **skip_gb**: 跳过 GB 前置检测，直接进行区域定位
     """
     start_time = time.time()
+    request_id = f"{int(start_time * 1000)}"
+    
+    logger.info(f"[{request_id}] 收到检测请求: algorithm={algorithm}, skip_gb={skip_gb}")
     
     # 检查参数是否为空
     if not image_base64 or image_base64.strip() == "":
+        logger.warning(f"[{request_id}] 参数为空")
         return JSONResponse(
             status_code=400,
             content={
@@ -299,6 +396,7 @@ async def tamper_detect_img(
     
     # 检查算法参数
     if algorithm not in ['ela', 'dct', 'fusion', 'ml']:
+        logger.warning(f"[{request_id}] 未知算法: {algorithm}")
         return JSONResponse(
             status_code=400,
             content={
@@ -315,6 +413,7 @@ async def tamper_detect_img(
         try:
             image_bytes = base64.b64decode(image_base64)
         except Exception:
+            logger.warning(f"[{request_id}] Base64 解码失败")
             return JSONResponse(
                 status_code=400,
                 content={
@@ -327,6 +426,7 @@ async def tamper_detect_img(
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
         if image is None:
+            logger.warning(f"[{request_id}] 无法解析图片")
             return JSONResponse(
                 status_code=400,
                 content={
@@ -334,6 +434,8 @@ async def tamper_detect_img(
                     "message": "无法解析图片，请确保是有效的图片格式"
                 }
             )
+        
+        logger.debug(f"[{request_id}] 图片尺寸: {image.shape}")
         
         # 保存临时文件
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -346,6 +448,7 @@ async def tamper_detect_img(
                 "confidence": 0.0,
                 "gb_confidence": None,
                 "mask_base64": None,
+                "heatmap_base64": None,
                 "marked_image_base64": None,
                 "tamper_regions": None,
                 "algorithm": algorithm,
@@ -363,6 +466,7 @@ async def tamper_detect_img(
                     result['is_tampered'] = False
                     result['confidence'] = gb_result['confidence']
                     result['processing_time'] = time.time() - start_time
+                    logger.info(f"[{request_id}] GB 判断为正常，跳过区域定位")
                     return result
             
             # 2. 如果篡改，进行区域定位
@@ -381,11 +485,15 @@ async def tamper_detect_img(
             result['is_tampered'] = detect_result['is_tampered']
             result['confidence'] = detect_result['confidence']
             result['mask_base64'] = detect_result.get('mask_base64')
+            result['heatmap_base64'] = detect_result.get('heatmap_base64')
             result['marked_image_base64'] = detect_result.get('marked_image_base64')
             result['tamper_regions'] = detect_result.get('tamper_regions')
             
             # 计算处理时间
             result['processing_time'] = time.time() - start_time
+            
+            logger.info(f"[{request_id}] 检测完成: is_tampered={result['is_tampered']}, "
+                       f"confidence={result['confidence']:.4f}, time={result['processing_time']*1000:.1f}ms")
             
             return result
         
@@ -394,6 +502,7 @@ async def tamper_detect_img(
                 os.unlink(tmp_path)
     
     except Exception as e:
+        logger.error(f"[{request_id}] 检测异常: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
@@ -405,6 +514,8 @@ async def tamper_detect_img(
 
 def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
     """使用 ML 检测器"""
+    logger.debug("使用 ML 检测器")
+    
     detector = get_ml_detector()
     result = detector.predict(image_path)
     
@@ -413,17 +524,31 @@ def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
     confidence = float(result['confidence'])
     mask = result.get('mask')
     
+    # 生成标记图片
+    marked_image_base64 = None
+    tamper_regions = None
+    
+    if mask is not None and mask.sum() > 0:
+        # 创建标记图片
+        marked_image_base64 = _create_marked_image(original_image, mask)
+        # 提取篡改区域
+        tamper_regions = _extract_regions(mask)
+        logger.debug(f"ML 检测到篡改区域: {len(tamper_regions) if tamper_regions else 0} 个")
+    
     return {
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "marked_image_base64": _create_marked_image(original_image, mask),
-        "tamper_regions": _extract_regions(mask)
+        "heatmap_base64": None,  # ML 不生成热力图
+        "marked_image_base64": marked_image_base64,
+        "tamper_regions": tamper_regions
     }
 
 
 def _detect_with_ela(image: np.ndarray) -> Dict:
     """使用 ELA 检测器"""
+    logger.debug("使用 ELA 检测器")
+    
     detector = get_ela_detector()
     
     # 生成热力图
@@ -432,22 +557,33 @@ def _detect_with_ela(image: np.ndarray) -> Dict:
     # 生成掩码
     mask = detector.get_mask(heatmap, method='otsu')
     
-    # 计算篡改比例作为置信度
+    # 生成彩色热力图
+    heatmap_colored = cv2.applyColorMap(
+        (heatmap * 255).astype(np.uint8),
+        cv2.COLORMAP_JET
+    )
+    
+    # 计算篡改比例作为置信度 (转换为 Python 原生类型)
     tamper_ratio = float(np.sum(mask > 0)) / mask.size
     is_tampered = bool(tamper_ratio > 0.01)  # 超过1%像素认为篡改
     confidence = float(min(tamper_ratio * 10, 1.0))  # 归一化置信度
+    
+    logger.debug(f"ELA 检测: tamper_ratio={tamper_ratio:.4f}, is_tampered={is_tampered}")
     
     return {
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "marked_image_base64": _create_marked_image(image, mask),
+        "heatmap_base64": _image_to_base64(heatmap_colored),
+        "marked_image_base64": _create_marked_image(image, mask, heatmap_colored),
         "tamper_regions": _extract_regions(mask)
     }
 
 
 def _detect_with_dct(image: np.ndarray) -> Dict:
     """使用 DCT 检测器"""
+    logger.debug("使用 DCT 检测器")
+    
     detector = get_dct_detector()
     
     # 生成热力图
@@ -456,22 +592,33 @@ def _detect_with_dct(image: np.ndarray) -> Dict:
     # 生成掩码
     mask = detector.get_mask(heatmap)
     
+    # 生成彩色热力图
+    heatmap_colored = cv2.applyColorMap(
+        (heatmap * 255).astype(np.uint8),
+        cv2.COLORMAP_JET
+    )
+    
     # 计算篡改比例作为置信度 (转换为 Python 原生类型)
     tamper_ratio = float(np.sum(mask > 0)) / mask.size
     is_tampered = bool(tamper_ratio > 0.01)
     confidence = float(min(tamper_ratio * 10, 1.0))
     
+    logger.debug(f"DCT 检测: tamper_ratio={tamper_ratio:.4f}, is_tampered={is_tampered}")
+    
     return {
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "marked_image_base64": _create_marked_image(image, mask),
+        "heatmap_base64": _image_to_base64(heatmap_colored),
+        "marked_image_base64": _create_marked_image(image, mask, heatmap_colored),
         "tamper_regions": _extract_regions(mask)
     }
 
 
 def _detect_with_fusion(image: np.ndarray) -> Dict:
     """使用融合检测器"""
+    logger.debug("使用融合检测器")
+    
     ela_detector = get_ela_detector()
     dct_detector = get_dct_detector()
     fusion = get_fusion_detector()
@@ -494,16 +641,25 @@ def _detect_with_fusion(image: np.ndarray) -> Dict:
     # 生成融合掩码
     mask = fusion.threshold(fused_heatmap, method='fixed', threshold=0.2)
     
+    # 生成彩色热力图
+    heatmap_colored = cv2.applyColorMap(
+        (fused_heatmap * 255).astype(np.uint8),
+        cv2.COLORMAP_JET
+    )
+    
     # 计算篡改比例作为置信度 (转换为 Python 原生类型)
     tamper_ratio = float(np.sum(mask > 0)) / mask.size
     is_tampered = bool(tamper_ratio > 0.01)
     confidence = float(min(tamper_ratio * 10, 1.0))
     
+    logger.debug(f"Fusion 检测: tamper_ratio={tamper_ratio:.4f}, is_tampered={is_tampered}")
+    
     return {
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "marked_image_base64": _create_marked_image(image, mask),
+        "heatmap_base64": _image_to_base64(heatmap_colored),
+        "marked_image_base64": _create_marked_image(image, mask, heatmap_colored),
         "tamper_regions": _extract_regions(mask)
     }
 
@@ -555,13 +711,24 @@ def _mask_to_base64(mask: np.ndarray) -> Optional[str]:
     return base64.b64encode(buffer).decode('utf-8')
 
 
-def _create_marked_image(image: np.ndarray, mask: np.ndarray) -> Optional[str]:
+def _image_to_base64(image: np.ndarray) -> Optional[str]:
+    """图片转 Base64"""
+    if image is None:
+        return None
+    
+    _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return base64.b64encode(buffer).decode('utf-8')
+
+
+def _create_marked_image(image: np.ndarray, mask: np.ndarray, 
+                         heatmap: np.ndarray = None) -> Optional[str]:
     """
     在原图上标记篡改区域
     
     Args:
         image: 原图 (BGR格式)
         mask: 篡改掩码 (二值图，255为篡改区域)
+        heatmap: 彩色热力图 (可选，用于 ELA/DCT/Fusion)
     
     Returns:
         标记后的图片 Base64 编码
@@ -584,6 +751,17 @@ def _create_marked_image(image: np.ndarray, mask: np.ndarray) -> Optional[str]:
     _, mask_binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
+    # 如果有热力图，先叠加热力图
+    if heatmap is not None:
+        # 确保热力图尺寸一致
+        if heatmap.shape[:2] != image.shape[:2]:
+            heatmap = cv2.resize(heatmap, (image.shape[1], image.shape[0]))
+        
+        # 创建掩码区域的热力图叠加
+        overlay = marked_image.copy()
+        overlay[mask > 127] = heatmap[mask > 127]
+        cv2.addWeighted(overlay, 0.5, marked_image, 0.5, 0, marked_image)
+    
     # 绘制红色轮廓
     cv2.drawContours(marked_image, contours, -1, (0, 0, 255), 3)
     
@@ -604,9 +782,37 @@ def _create_marked_image(image: np.ndarray, mask: np.ndarray) -> Optional[str]:
     return base64.b64encode(buffer).decode('utf-8')
 
 
-if __name__ == '__main__':
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(description='图像篡改检测服务')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='服务地址')
+    parser.add_argument('--port', type=int, default=8000, help='服务端口')
+    parser.add_argument('--workers', type=int, default=1, help='Worker 数量 (并发支持)')
+    parser.add_argument('--log-level', type=str, default='INFO', 
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       help='日志级别')
+    parser.add_argument('--log-file', type=str, default=None, help='日志文件路径')
+    
+    args = parser.parse_args()
+    
+    # 配置日志
+    setup_logging(args.log_level, args.log_file)
+    
     # 启动时加载 GB 分类器
     load_gb_classifier()
     
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info(f"启动服务: http://{args.host}:{args.port}")
+    logger.info(f"Workers: {args.workers}")
+    
+    # 启动服务
+    uvicorn.run(
+        "server_forgrey:app",
+        host=args.host,
+        port=args.port,
+        workers=args.workers,
+        log_level=args.log_level.lower()
+    )
+
+
+if __name__ == '__main__':
+    main()
