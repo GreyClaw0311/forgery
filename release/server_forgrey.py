@@ -3,34 +3,24 @@
 图像篡改检测服务
 
 用法:
-    # 启动服务 (默认单进程)
     python server_forgrey.py
     
-    # 指定端口和主机
-    python server_forgrey.py --host 0.0.0.0 --port 8000
-    
-    # 启用多 worker 并发
-    python server_forgrey.py --workers 4
-    
-    # 指定日志级别
-    python server_forgrey.py --log-level debug
-    
-    # 指定日志文件
-    python server_forgrey.py --log-file /var/log/forgery/server.log
+    # 或指定端口
+    python server_forgrey.py --port 8000
 
 功能:
     1. GB 分类器前置检测
     2. 多算法支持 (ela/dct/fusion/ml)
     3. 像素级篡改区域定位
     4. 篡改区域坐标输出
-    5. 彩色热力图输出
-    6. 完整日志管理
-    7. 多 worker 并发支持
+    5. 在原图上绘制篡改区域矩形框
+    6. 自动日志管理 (保存到 ./logs，每30天清理)
+    7. 默认8并发支持
 
 流程:
     1. GB 分类器判断图片是否篡改 (前置检测)
     2. 如果篡改，使用指定算法定位篡改区域
-    3. 输出彩色热力图和篡改区域标注
+    3. 在原图上绘制矩形框标注篡改区域
 
 入参:
     - image_base64: 图片 Base64 编码
@@ -43,7 +33,6 @@
     - confidence: 置信度
     - gb_confidence: GB 分类器置信度
     - mask_base64: 篡改区域掩码 Base64 (二值图)
-    - heatmap_base64: 彩色热力图 Base64 (仅 ela/dct/fusion)
     - marked_image_base64: 原图标记篡改区域图片 Base64
     - tamper_regions: 篡改区域矩形坐标列表
 """
@@ -56,7 +45,8 @@ import tempfile
 import time
 import argparse
 import logging
-from datetime import datetime
+import glob
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -94,61 +84,93 @@ STATUS_CODES = {
 logger = logging.getLogger("forgery_server")
 
 
-def setup_logging(log_level: str = "INFO", log_file: str = None):
+def setup_logging():
     """
     配置日志系统
     
-    Args:
-        log_level: 日志级别 (DEBUG/INFO/WARNING/ERROR)
-        log_file: 日志文件路径 (可选)
+    日志保存到 ./logs 目录，自动管理：
+    - 日志轮转: 10MB 一个文件，保留5个
+    - 定期清理: 每30天删除一次旧日志
     """
+    # 日志目录
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # 日志文件
+    log_file = os.path.join(log_dir, 'server.log')
+    
     # 日志格式
     log_format = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
-    
-    # 日志级别
-    level = getattr(logging, log_level.upper(), logging.INFO)
     
     # 创建 formatter
     formatter = logging.Formatter(log_format, date_format)
     
     # 控制台处理器
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(level)
+    console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
+    
+    # 文件处理器 (日志轮转)
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
     
     # 配置根日志
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    root_logger.setLevel(logging.INFO)
     root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
     
-    # 文件处理器 (如果指定了日志文件)
-    if log_file:
-        # 确保日志目录存在
-        log_dir = os.path.dirname(log_file)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
+    logger.info(f"日志文件: {log_file}")
+    
+    # 定期清理旧日志 (每30天)
+    clean_old_logs(log_dir, days=30)
+    
+    return log_file
+
+
+def clean_old_logs(log_dir: str, days: int = 30):
+    """
+    清理旧日志文件
+    
+    Args:
+        log_dir: 日志目录
+        days: 保留天数
+    """
+    try:
+        cutoff_date = datetime.now() - timedelta(days=days)
         
-        # 使用 RotatingFileHandler 支持日志轮转
-        file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding='utf-8'
-        )
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-        logger.info(f"日志文件: {log_file}")
-    
-    logger.info(f"日志级别: {log_level}")
+        # 查找所有日志文件
+        log_files = glob.glob(os.path.join(log_dir, '*.log*'))
+        
+        cleaned = 0
+        for log_file in log_files:
+            try:
+                # 获取文件修改时间
+                mtime = datetime.fromtimestamp(os.path.getmtime(log_file))
+                if mtime < cutoff_date:
+                    os.remove(log_file)
+                    cleaned += 1
+            except Exception as e:
+                logger.warning(f"清理日志文件失败 {log_file}: {e}")
+        
+        if cleaned > 0:
+            logger.info(f"清理了 {cleaned} 个旧日志文件 (超过 {days} 天)")
+    except Exception as e:
+        logger.warning(f"日志清理失败: {e}")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="图像篡改检测服务",
     description="检测图像是否经过拼接、复制粘贴、修饰等篡改操作\n\n流程: GB分类器(前置) → 区域定位算法",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 # 初始化检测器
@@ -285,7 +307,6 @@ class DetectionResponse(BaseModel):
     confidence: float                        # 置信度 (0-1)
     gb_confidence: Optional[float]           # GB 分类器置信度
     mask_base64: Optional[str]               # 篡改区域掩码 Base64
-    heatmap_base64: Optional[str]            # 彩色热力图 Base64
     marked_image_base64: Optional[str]       # 原图标记篡改区域图片 Base64
     tamper_regions: Optional[List[TamperRegion]]  # 篡改区域矩形坐标列表
     algorithm: str                           # 使用的算法
@@ -448,7 +469,6 @@ async def tamper_detect_img(
                 "confidence": 0.0,
                 "gb_confidence": None,
                 "mask_base64": None,
-                "heatmap_base64": None,
                 "marked_image_base64": None,
                 "tamper_regions": None,
                 "algorithm": algorithm,
@@ -485,7 +505,6 @@ async def tamper_detect_img(
             result['is_tampered'] = detect_result['is_tampered']
             result['confidence'] = detect_result['confidence']
             result['mask_base64'] = detect_result.get('mask_base64')
-            result['heatmap_base64'] = detect_result.get('heatmap_base64')
             result['marked_image_base64'] = detect_result.get('marked_image_base64')
             result['tamper_regions'] = detect_result.get('tamper_regions')
             
@@ -529,7 +548,7 @@ def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
     tamper_regions = None
     
     if mask is not None and mask.sum() > 0:
-        # 创建标记图片
+        # 创建标记图片 (在原图上绘制矩形框)
         marked_image_base64 = _create_marked_image(original_image, mask)
         # 提取篡改区域
         tamper_regions = _extract_regions(mask)
@@ -539,7 +558,6 @@ def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "heatmap_base64": None,  # ML 不生成热力图
         "marked_image_base64": marked_image_base64,
         "tamper_regions": tamper_regions
     }
@@ -557,12 +575,6 @@ def _detect_with_ela(image: np.ndarray) -> Dict:
     # 生成掩码
     mask = detector.get_mask(heatmap, method='otsu')
     
-    # 生成彩色热力图
-    heatmap_colored = cv2.applyColorMap(
-        (heatmap * 255).astype(np.uint8),
-        cv2.COLORMAP_JET
-    )
-    
     # 计算篡改比例作为置信度 (转换为 Python 原生类型)
     tamper_ratio = float(np.sum(mask > 0)) / mask.size
     is_tampered = bool(tamper_ratio > 0.01)  # 超过1%像素认为篡改
@@ -570,13 +582,20 @@ def _detect_with_ela(image: np.ndarray) -> Dict:
     
     logger.debug(f"ELA 检测: tamper_ratio={tamper_ratio:.4f}, is_tampered={is_tampered}")
     
+    # 创建标记图片
+    marked_image_base64 = None
+    tamper_regions = None
+    
+    if mask is not None and mask.sum() > 0:
+        marked_image_base64 = _create_marked_image(image, mask)
+        tamper_regions = _extract_regions(mask)
+    
     return {
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "heatmap_base64": _image_to_base64(heatmap_colored),
-        "marked_image_base64": _create_marked_image(image, mask, heatmap_colored),
-        "tamper_regions": _extract_regions(mask)
+        "marked_image_base64": marked_image_base64,
+        "tamper_regions": tamper_regions
     }
 
 
@@ -592,12 +611,6 @@ def _detect_with_dct(image: np.ndarray) -> Dict:
     # 生成掩码
     mask = detector.get_mask(heatmap)
     
-    # 生成彩色热力图
-    heatmap_colored = cv2.applyColorMap(
-        (heatmap * 255).astype(np.uint8),
-        cv2.COLORMAP_JET
-    )
-    
     # 计算篡改比例作为置信度 (转换为 Python 原生类型)
     tamper_ratio = float(np.sum(mask > 0)) / mask.size
     is_tampered = bool(tamper_ratio > 0.01)
@@ -605,13 +618,20 @@ def _detect_with_dct(image: np.ndarray) -> Dict:
     
     logger.debug(f"DCT 检测: tamper_ratio={tamper_ratio:.4f}, is_tampered={is_tampered}")
     
+    # 创建标记图片
+    marked_image_base64 = None
+    tamper_regions = None
+    
+    if mask is not None and mask.sum() > 0:
+        marked_image_base64 = _create_marked_image(image, mask)
+        tamper_regions = _extract_regions(mask)
+    
     return {
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "heatmap_base64": _image_to_base64(heatmap_colored),
-        "marked_image_base64": _create_marked_image(image, mask, heatmap_colored),
-        "tamper_regions": _extract_regions(mask)
+        "marked_image_base64": marked_image_base64,
+        "tamper_regions": tamper_regions
     }
 
 
@@ -641,12 +661,6 @@ def _detect_with_fusion(image: np.ndarray) -> Dict:
     # 生成融合掩码
     mask = fusion.threshold(fused_heatmap, method='fixed', threshold=0.2)
     
-    # 生成彩色热力图
-    heatmap_colored = cv2.applyColorMap(
-        (fused_heatmap * 255).astype(np.uint8),
-        cv2.COLORMAP_JET
-    )
-    
     # 计算篡改比例作为置信度 (转换为 Python 原生类型)
     tamper_ratio = float(np.sum(mask > 0)) / mask.size
     is_tampered = bool(tamper_ratio > 0.01)
@@ -654,13 +668,20 @@ def _detect_with_fusion(image: np.ndarray) -> Dict:
     
     logger.debug(f"Fusion 检测: tamper_ratio={tamper_ratio:.4f}, is_tampered={is_tampered}")
     
+    # 创建标记图片
+    marked_image_base64 = None
+    tamper_regions = None
+    
+    if mask is not None and mask.sum() > 0:
+        marked_image_base64 = _create_marked_image(image, mask)
+        tamper_regions = _extract_regions(mask)
+    
     return {
         "is_tampered": is_tampered,
         "confidence": confidence,
         "mask_base64": _mask_to_base64(mask),
-        "heatmap_base64": _image_to_base64(heatmap_colored),
-        "marked_image_base64": _create_marked_image(image, mask, heatmap_colored),
-        "tamper_regions": _extract_regions(mask)
+        "marked_image_base64": marked_image_base64,
+        "tamper_regions": tamper_regions
     }
 
 
@@ -711,24 +732,13 @@ def _mask_to_base64(mask: np.ndarray) -> Optional[str]:
     return base64.b64encode(buffer).decode('utf-8')
 
 
-def _image_to_base64(image: np.ndarray) -> Optional[str]:
-    """图片转 Base64"""
-    if image is None:
-        return None
-    
-    _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-    return base64.b64encode(buffer).decode('utf-8')
-
-
-def _create_marked_image(image: np.ndarray, mask: np.ndarray, 
-                         heatmap: np.ndarray = None) -> Optional[str]:
+def _create_marked_image(image: np.ndarray, mask: np.ndarray) -> Optional[str]:
     """
-    在原图上标记篡改区域
+    在原图上绘制篡改区域矩形框
     
     Args:
         image: 原图 (BGR格式)
         mask: 篡改掩码 (二值图，255为篡改区域)
-        heatmap: 彩色热力图 (可选，用于 ELA/DCT/Fusion)
     
     Returns:
         标记后的图片 Base64 编码
@@ -751,30 +761,15 @@ def _create_marked_image(image: np.ndarray, mask: np.ndarray,
     _, mask_binary = cv2.threshold(mask_gray, 127, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # 如果有热力图，先叠加热力图
-    if heatmap is not None:
-        # 确保热力图尺寸一致
-        if heatmap.shape[:2] != image.shape[:2]:
-            heatmap = cv2.resize(heatmap, (image.shape[1], image.shape[0]))
-        
-        # 创建掩码区域的热力图叠加
-        overlay = marked_image.copy()
-        overlay[mask > 127] = heatmap[mask > 127]
-        cv2.addWeighted(overlay, 0.5, marked_image, 0.5, 0, marked_image)
-    
     # 绘制红色轮廓
-    cv2.drawContours(marked_image, contours, -1, (0, 0, 255), 3)
-    
-    # 填充半透明红色
-    overlay = marked_image.copy()
-    cv2.fillPoly(overlay, contours, (0, 0, 255))
-    cv2.addWeighted(overlay, 0.3, marked_image, 0.7, 0, marked_image)
+    cv2.drawContours(marked_image, contours, -1, (0, 0, 255), 2)
     
     # 绘制矩形框
     for contour in contours:
         area = cv2.contourArea(contour)
         if area >= 100:
             x, y, w, h = cv2.boundingRect(contour)
+            # 绿色矩形框
             cv2.rectangle(marked_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
     
     # 编码为 Base64
@@ -785,32 +780,28 @@ def _create_marked_image(image: np.ndarray, mask: np.ndarray,
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='图像篡改检测服务')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='服务地址')
     parser.add_argument('--port', type=int, default=8000, help='服务端口')
-    parser.add_argument('--workers', type=int, default=1, help='Worker 数量 (并发支持)')
-    parser.add_argument('--log-level', type=str, default='INFO', 
-                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                       help='日志级别')
-    parser.add_argument('--log-file', type=str, default=None, help='日志文件路径')
     
     args = parser.parse_args()
     
-    # 配置日志
-    setup_logging(args.log_level, args.log_file)
+    # 配置日志 (自动保存到 ./logs，每30天清理)
+    setup_logging()
     
     # 启动时加载 GB 分类器
     load_gb_classifier()
     
-    logger.info(f"启动服务: http://{args.host}:{args.port}")
-    logger.info(f"Workers: {args.workers}")
+    host = '0.0.0.0'
+    workers = 8  # 默认8并发
+    
+    logger.info(f"启动服务: http://{host}:{args.port}")
+    logger.info(f"Workers: {workers}")
     
     # 启动服务
     uvicorn.run(
         "server_forgrey:app",
-        host=args.host,
+        host=host,
         port=args.port,
-        workers=args.workers,
-        log_level=args.log_level.lower()
+        workers=workers
     )
 
 
