@@ -6,8 +6,11 @@
     # 单张图片测试
     python test_service.py --mode single --image test.jpg --algorithm ml
     
-    # 批量测试 (默认保存图片)
+    # 批量测试 (默认保存图片，默认8并发)
     python test_service.py --mode batch --data_dir ./test --algorithm ml
+    
+    # 批量测试 (指定并发数)
+    python test_service.py --mode batch --data_dir ./test --algorithm ml --workers 16
     
     # 批量测试 (不保存图片)
     python test_service.py --mode batch --data_dir ./test --algorithm ml --no_save_images
@@ -20,7 +23,7 @@
 
 功能:
     1. 单张图片测试
-    2. 批量图片测试 (默认保存图片结果)
+    2. 批量图片测试 (支持并发，默认8线程)
     3. 多算法对比测试
     4. 生成完整测试报告 (效果 + 性能 + 资源消耗)
     5. 生成发版规格数据
@@ -53,6 +56,8 @@ import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import requests
 import cv2
@@ -207,6 +212,7 @@ class ResourceMonitor:
         self.cpu_samples = []
         self.gpu_memory_samples = []
         self._monitoring = False
+        self._lock = threading.Lock()
     
     def start(self):
         """开始监控"""
@@ -221,17 +227,18 @@ class ResourceMonitor:
         if not self._monitoring:
             return
         
-        if HAS_PSUTIL:
-            self.memory_samples.append(psutil.virtual_memory().percent)
-            self.cpu_samples.append(psutil.cpu_percent(interval=0.01))
-        
-        if HAS_TORCH and torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                self.gpu_memory_samples.append({
-                    'device': i,
-                    'allocated_gb': torch.cuda.memory_allocated(i) / (1024**3),
-                    'reserved_gb': torch.cuda.memory_reserved(i) / (1024**3),
-                })
+        with self._lock:
+            if HAS_PSUTIL:
+                self.memory_samples.append(psutil.virtual_memory().percent)
+                self.cpu_samples.append(psutil.cpu_percent(interval=0.01))
+            
+            if HAS_TORCH and torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    self.gpu_memory_samples.append({
+                        'device': i,
+                        'allocated_gb': torch.cuda.memory_allocated(i) / (1024**3),
+                        'reserved_gb': torch.cuda.memory_reserved(i) / (1024**3),
+                    })
     
     def stop(self) -> Dict:
         """停止监控并返回统计"""
@@ -242,20 +249,21 @@ class ResourceMonitor:
             'elapsed_seconds': round(elapsed, 2),
         }
         
-        if self.memory_samples:
-            result['memory_percent_avg'] = round(np.mean(self.memory_samples), 2)
-            result['memory_percent_max'] = round(max(self.memory_samples), 2)
-        
-        if self.cpu_samples:
-            result['cpu_percent_avg'] = round(np.mean(self.cpu_samples), 2)
-            result['cpu_percent_max'] = round(max(self.cpu_samples), 2)
-        
-        if self.gpu_memory_samples:
-            # 取最后一个设备的最大值
-            max_allocated = max(s['allocated_gb'] for s in self.gpu_memory_samples)
-            max_reserved = max(s['reserved_gb'] for s in self.gpu_memory_samples)
-            result['gpu_memory_allocated_max_gb'] = round(max_allocated, 2)
-            result['gpu_memory_reserved_max_gb'] = round(max_reserved, 2)
+        with self._lock:
+            if self.memory_samples:
+                result['memory_percent_avg'] = round(np.mean(self.memory_samples), 2)
+                result['memory_percent_max'] = round(max(self.memory_samples), 2)
+            
+            if self.cpu_samples:
+                result['cpu_percent_avg'] = round(np.mean(self.cpu_samples), 2)
+                result['cpu_percent_max'] = round(max(self.cpu_samples), 2)
+            
+            if self.gpu_memory_samples:
+                # 取最后一个设备的最大值
+                max_allocated = max(s['allocated_gb'] for s in self.gpu_memory_samples)
+                max_reserved = max(s['reserved_gb'] for s in self.gpu_memory_samples)
+                result['gpu_memory_allocated_max_gb'] = round(max_allocated, 2)
+                result['gpu_memory_reserved_max_gb'] = round(max_reserved, 2)
         
         return result
 
@@ -328,10 +336,8 @@ class TamperDetectionTester:
                     'message': response.text[:500],
                     'request_time': request_time
                 }
-                print(f"\n[ERROR] HTTP {response.status_code}: {response.text[:200]}")
                 return error_result
         except Exception as e:
-            print(f"\n[ERROR] 请求异常: {e}")
             return {
                 'status': 'error',
                 'message': str(e),
@@ -524,7 +530,6 @@ class TamperDetectionTester:
             # 优先使用服务返回的 marked_image_base64
             marked_image_base64 = result.get('marked_image_base64')
             if marked_image_base64:
-                print(f"  使用服务返回的标注图片", flush=True)
                 marked_image = self.decode_mask_base64(marked_image_base64)
                 if marked_image is not None:
                     right_image = marked_image
@@ -532,7 +537,6 @@ class TamperDetectionTester:
                 # 使用 mask_base64 绘制标注
                 mask_base64 = result.get('mask_base64')
                 if mask_base64:
-                    print(f"  使用服务返回的掩码绘制标注", flush=True)
                     mask = self.decode_mask_base64(mask_base64)
                     if mask is not None:
                         # 确保是灰度图
@@ -564,8 +568,6 @@ class TamperDetectionTester:
             
         except Exception as e:
             print(f"  保存图片失败: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
             return False
     
     def _add_text_annotations(self, image: np.ndarray, result: Dict, 
@@ -598,16 +600,91 @@ class TamperDetectionTester:
             cv2.putText(image, correct_text, (10, 150), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, correct_color, 2)
     
-    def test_batch(self, data_dir: str, algorithm: str = "ml", 
-                   save_images: bool = True, dataset_name: str = None) -> Dict:
+    def _process_single_image(self, image_file: str, images_dir: str, masks_dir: str,
+                              algorithm: str, save_images: bool, images_output_dir: str):
         """
-        批量图片测试
+        处理单张图片 (用于并发)
+        
+        Returns:
+            Dict: 处理结果
+        """
+        image_path = os.path.join(images_dir, image_file)
+        
+        # 查找对应的 mask
+        mask_name = os.path.splitext(image_file)[0] + '.png'
+        mask_path = os.path.join(masks_dir, mask_name)
+        if not os.path.exists(mask_path):
+            mask_name = os.path.splitext(image_file)[0] + '.jpg'
+            mask_path = os.path.join(masks_dir, mask_name)
+        
+        true_label = self.check_mask_label(mask_path)
+        
+        # 检测
+        result = self.detect_single(image_path, algorithm)
+        
+        # 资源采样
+        self.resource_monitor.sample()
+        
+        # 检查返回结果
+        status = result.get('status', '')
+        
+        # 成功状态码以 '0001' 开头
+        if status.startswith('0001'):
+            processing_time = result.get('processing_time', 0)
+            is_tampered = result.get('is_tampered', False)
+            confidence = result.get('confidence', 0)
+            pred_label = 1 if is_tampered else 0
+            
+            # 像素级指标 (如果有mask和预测mask)
+            pixel_metrics = None
+            if os.path.exists(mask_path) and pred_label == 1:
+                true_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                pred_mask_base64 = result.get('mask_base64')
+                
+                if true_mask is not None and pred_mask_base64:
+                    pred_mask = self.decode_mask_base64(pred_mask_base64)
+                    if pred_mask is not None:
+                        pixel_metrics = self.compute_pixel_metrics(pred_mask, true_mask)
+            
+            # 保存结果图片
+            if save_images:
+                output_name = f"{os.path.splitext(image_file)[0]}_{algorithm}_result.jpg"
+                output_path = os.path.join(images_output_dir, output_name)
+                self._save_result_image(image_path, result, output_path, true_label, mask_path)
+            
+            return {
+                'image': image_file,
+                'true_label': true_label,
+                'pred_label': pred_label,
+                'confidence': confidence,
+                'processing_time': processing_time,
+                'pixel_metrics': pixel_metrics,
+                'status': 'success'
+            }
+        else:
+            # 错误状态码
+            error_msg = status if status else result.get('message', 'Unknown error')
+            
+            return {
+                'image': image_file,
+                'true_label': true_label,
+                'pred_label': -1,
+                'error': error_msg,
+                'status': 'error'
+            }
+    
+    def test_batch(self, data_dir: str, algorithm: str = "ml", 
+                   save_images: bool = True, dataset_name: str = None,
+                   workers: int = 8) -> Dict:
+        """
+        批量图片测试 (支持并发)
         
         Args:
             data_dir: 数据目录
             algorithm: 算法名称
             save_images: 是否保存结果图片 (默认 True)
             dataset_name: 数据集名称
+            workers: 并发线程数 (默认 8)
         """
         data_dir = os.path.abspath(data_dir)
         images_dir = os.path.join(data_dir, 'images')
@@ -631,11 +708,19 @@ class TamperDetectionTester:
         print(f"{'='*60}")
         print(f"算法: {algorithm}")
         print(f"图片总数: {total}")
+        print(f"并发线程: {workers}")
         print(f"保存图片: {'是' if save_images else '否'}")
         print("-" * 60)
         
         # 开始资源监控
         self.resource_monitor.start()
+        
+        # 创建图片保存目录
+        if save_images:
+            images_output_dir = os.path.join(self.output_dir, 'images', algorithm)
+            os.makedirs(images_output_dir, exist_ok=True)
+        else:
+            images_output_dir = None
         
         # 统计变量
         results = []
@@ -650,116 +735,76 @@ class TamperDetectionTester:
         tampered_confidences = []
         normal_confidences = []
         
-        # 创建图片保存目录
-        if save_images:
-            images_output_dir = os.path.join(self.output_dir, 'images', algorithm)
-            os.makedirs(images_output_dir, exist_ok=True)
+        # 进度跟踪
+        completed = [0]
+        lock = threading.Lock()
         
         start_time = time.time()
         
-        for i, image_file in enumerate(image_files):
-            image_path = os.path.join(images_dir, image_file)
+        # 并发处理
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # 提交所有任务
+            futures = {
+                executor.submit(
+                    self._process_single_image,
+                    image_file, images_dir, masks_dir,
+                    algorithm, save_images, images_output_dir
+                ): image_file for image_file in image_files
+            }
             
-            # 查找对应的 mask
-            mask_name = os.path.splitext(image_file)[0] + '.png'
-            mask_path = os.path.join(masks_dir, mask_name)
-            if not os.path.exists(mask_path):
-                mask_name = os.path.splitext(image_file)[0] + '.jpg'
-                mask_path = os.path.join(masks_dir, mask_name)
-            
-            true_label = self.check_mask_label(mask_path)
-            if true_label == 1:
-                tampered_count += 1
-            else:
-                good_count += 1
-            
-            # 检测
-            result = self.detect_single(image_path, algorithm)
-            
-            # 资源采样
-            self.resource_monitor.sample()
-            
-            # 检查返回结果
-            status = result.get('status', '')
-            
-            # 成功状态码以 '0001' 开头
-            if status.startswith('0001'):
-                processing_time = result.get('processing_time', 0)
-                processing_times.append(processing_time)
+            # 收集结果
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
                 
-                is_tampered = result.get('is_tampered', False)
-                confidence = result.get('confidence', 0)
-                pred_label = 1 if is_tampered else 0
-                
-                # 更新混淆矩阵
-                if true_label == 1 and pred_label == 1:
-                    tp += 1
-                elif true_label == 0 and pred_label == 0:
-                    tn += 1
-                elif true_label == 0 and pred_label == 1:
-                    fp += 1
-                else:
-                    fn += 1
-                
-                # 置信度统计
+                # 更新统计
+                true_label = result['true_label']
                 if true_label == 1:
-                    tampered_confidences.append(confidence)
+                    tampered_count += 1
                 else:
-                    normal_confidences.append(confidence)
+                    good_count += 1
                 
-                # 像素级指标 (如果有mask和预测mask)
-                if os.path.exists(mask_path) and pred_label == 1:
-                    true_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                    pred_mask_base64 = result.get('mask_base64')
+                if result['status'] == 'success':
+                    processing_times.append(result['processing_time'])
                     
-                    if true_mask is not None and pred_mask_base64:
-                        pred_mask = self.decode_mask_base64(pred_mask_base64)
-                        if pred_mask is not None:
-                            pixel_metrics = self.compute_pixel_metrics(pred_mask, true_mask)
-                            if pixel_metrics:
-                                pixel_metrics_list.append(pixel_metrics)
-                                total_pixel_tp += pixel_metrics['tp']
-                                total_pixel_tn += pixel_metrics['tn']
-                                total_pixel_fp += pixel_metrics['fp']
-                                total_pixel_fn += pixel_metrics['fn']
+                    pred_label = result['pred_label']
+                    confidence = result['confidence']
+                    
+                    # 更新混淆矩阵
+                    if true_label == 1 and pred_label == 1:
+                        tp += 1
+                    elif true_label == 0 and pred_label == 0:
+                        tn += 1
+                    elif true_label == 0 and pred_label == 1:
+                        fp += 1
+                    else:
+                        fn += 1
+                    
+                    # 置信度统计
+                    if true_label == 1:
+                        tampered_confidences.append(confidence)
+                    else:
+                        normal_confidences.append(confidence)
+                    
+                    # 像素级指标
+                    if result.get('pixel_metrics'):
+                        pm = result['pixel_metrics']
+                        pixel_metrics_list.append(pm)
+                        total_pixel_tp += pm['tp']
+                        total_pixel_tn += pm['tn']
+                        total_pixel_fp += pm['fp']
+                        total_pixel_fn += pm['fn']
+                else:
+                    fn += 1 if true_label == 1 else 0
+                    fp += 1 if true_label == 0 else 0
                 
-                # 保存结果图片 (默认保存)
-                if save_images:
-                    output_name = f"{os.path.splitext(image_file)[0]}_{algorithm}_result.jpg"
-                    output_path = os.path.join(images_output_dir, output_name)
-                    self._save_result_image(image_path, result, output_path, true_label, mask_path)
-                
-                results.append({
-                    'image': image_file,
-                    'true_label': true_label,
-                    'pred_label': pred_label,
-                    'confidence': confidence,
-                    'processing_time': processing_time,
-                })
-            else:
-                # 错误状态码: 0000/0002/0004/0007
-                error_msg = status if status else result.get('message', 'Unknown error')
-                
-                # 打印前几个错误的详细信息
-                error_count = sum(1 for r in results if r.get('pred_label') == -1)
-                if error_count < 5:
-                    print(f"\n  ⚠️图片 {image_file} 检测失败: {error_msg}")
-                
-                fn += 1 if true_label == 1 else 0
-                fp += 1 if true_label == 0 else 0
-                results.append({
-                    'image': image_file,
-                    'true_label': true_label,
-                    'pred_label': -1,
-                    'error': error_msg,
-                })
-            
-            # 进度显示
-            if (i + 1) % 100 == 0 or (i + 1) == total:
-                elapsed = time.time() - start_time
-                fps = (i + 1) / elapsed
-                eta = (total - i - 1) / fps if fps > 0 else 0
-                print(f"\r  [{i+1}/{total}] {fps:.1f} FPS | 耗时: {elapsed:.1f}s | 预计: {eta:.1f}s", end='')
+                # 进度显示
+                with lock:
+                    completed[0] += 1
+                    elapsed = time.time() - start_time
+                    fps = completed[0] / elapsed
+                    eta = (total - completed[0]) / fps if fps > 0 else 0
+                    print(f"\r  [{completed[0]}/{total}] {fps:.1f} FPS | 耗时: {elapsed:.1f}s | 预计: {eta:.1f}s", end='')
         
         print()
         
@@ -825,6 +870,7 @@ class TamperDetectionTester:
                 'tampered_images': tampered_count,
                 'good_images': good_count,
                 'save_images': save_images,
+                'workers': workers,
             },
             'performance': {
                 'total_time': round(total_time, 2),
@@ -881,6 +927,7 @@ class TamperDetectionTester:
         print(f"  数据集: {info.get('dataset_name', info['data_dir'])}")
         print(f"  算法: {info['algorithm']}")
         print(f"  时间: {info['test_time']}")
+        print(f"  并发线程: {info.get('workers', 8)}")
         print(f"  图片: {info['tested_images']}/{info['total_images']} (篡改:{info['tampered_images']}, 正常:{info['good_images']})")
         print(f"  保存图片: {'是' if info.get('save_images', False) else '否'}")
         
@@ -921,7 +968,8 @@ class TamperDetectionTester:
                 print(f"  GPU显存峰值: {res['gpu_memory_allocated_max_gb']:.2f}GB")
     
     def compare_algorithms(self, data_dir: str, algorithms: List[str] = None, 
-                          save_images: bool = True, dataset_name: str = None) -> Dict:
+                          save_images: bool = True, dataset_name: str = None,
+                          workers: int = 8) -> Dict:
         """多算法对比测试"""
         if algorithms is None:
             algorithms = ['ela', 'dct', 'fusion', 'ml']
@@ -933,7 +981,7 @@ class TamperDetectionTester:
         reports = {}
         for algo in algorithms:
             print(f"\n>>> 测试算法: {algo}")
-            report = self.test_batch(data_dir, algo, save_images, dataset_name)
+            report = self.test_batch(data_dir, algo, save_images, dataset_name, workers)
             reports[algo] = report
         
         # 打印对比表
@@ -976,7 +1024,7 @@ class TamperDetectionTester:
         return reports
     
     def generate_release_report(self, data_dirs: List[str], dataset_names: List[str] = None,
-                                algorithms: List[str] = None) -> Dict:
+                                algorithms: List[str] = None, workers: int = 8) -> Dict:
         """
         生成发版规格数据报告
         
@@ -984,6 +1032,7 @@ class TamperDetectionTester:
             data_dirs: 数据集目录列表
             dataset_names: 数据集名称列表
             algorithms: 算法列表
+            workers: 并发线程数
         """
         if algorithms is None:
             algorithms = ['ela', 'dct', 'fusion', 'ml']
@@ -1008,7 +1057,7 @@ class TamperDetectionTester:
             
             for algo in algorithms:
                 print(f"\n  >>> 算法: {algo}")
-                report = self.test_batch(data_dir, algo, True, dataset_name)
+                report = self.test_batch(data_dir, algo, True, dataset_name, workers)
                 all_results[dataset_name][algo] = report
         
         # 生成汇总报告
@@ -1120,6 +1169,8 @@ def main():
                         help='保存结果图片 (默认开启)')
     parser.add_argument('--no_save_images', action='store_true',
                         help='不保存结果图片')
+    parser.add_argument('--workers', type=int, default=8,
+                        help='并发线程数 (默认 8)')
     
     args = parser.parse_args()
     
@@ -1144,17 +1195,17 @@ def main():
     elif args.mode == 'batch':
         algorithms = ['ela', 'dct', 'fusion', 'ml'] if args.algorithm == 'all' else [args.algorithm]
         if len(algorithms) == 1:
-            tester.test_batch(args.data_dir, algorithms[0], save_images, args.dataset_name)
+            tester.test_batch(args.data_dir, algorithms[0], save_images, args.dataset_name, args.workers)
         else:
-            tester.compare_algorithms(args.data_dir, algorithms, save_images, args.dataset_name)
+            tester.compare_algorithms(args.data_dir, algorithms, save_images, args.dataset_name, args.workers)
     
     elif args.mode == 'compare':
-        tester.compare_algorithms(args.data_dir, None, save_images, args.dataset_name)
+        tester.compare_algorithms(args.data_dir, None, save_images, args.dataset_name, args.workers)
     
     elif args.mode == 'release':
         data_dirs = args.data_dirs.split(',') if args.data_dirs else [args.data_dir]
         dataset_names = args.dataset_names.split(',') if args.dataset_names else None
-        tester.generate_release_report(data_dirs, dataset_names)
+        tester.generate_release_report(data_dirs, dataset_names, workers=args.workers)
 
 
 if __name__ == '__main__':

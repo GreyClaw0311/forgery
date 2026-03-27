@@ -18,8 +18,9 @@
 - ✅ **GPU 加速**: 支持 PyTorch GPU 加速推理
 - ✅ **REST API**: FastAPI 服务，易于集成
 - ✅ **完整日志**: 自动保存到 ./logs 目录，每30天清理
-- ✅ **高并发支持**: 默认8个 Worker，支持高并发请求
-- ✅ **测试工具**: 完整的单张/批量测试脚本，自动保存结果图片
+- ✅ **高并发支持**: 服务端默认8个 Worker，测试脚本支持并发测试
+- ✅ **一键启停**: start.sh / stop.sh 脚本，支持前台/后台运行
+- ✅ **测试工具**: 完整的单张/批量测试脚本，支持并发加速
 
 ---
 
@@ -83,6 +84,8 @@ forgery/
 └── release/                     # 推理服务 (在线部署)
     ├── server_forgrey.py       # FastAPI 主程序
     ├── test_service.py         # 测试脚本 ⭐
+    ├── start.sh                # 服务启动脚本 ⭐
+    ├── stop.sh                 # 服务停止脚本 ⭐
     ├── requirements.txt        # 服务依赖
     │
     ├── algorithms/             # 算法实现
@@ -130,14 +133,30 @@ release/models/
 
 ### 3. 启动服务
 
+**方式一：使用启动脚本 (推荐)**
+
 ```bash
 cd release
 
-# 启动服务 (默认8并发)
-python server_forgrey.py
+# 前台启动 (默认端口 8000)
+./start.sh
 
-# 指定端口
-python server_forgrey.py --port 8080
+# 指定端口启动
+./start.sh -p 8080
+
+# 后台启动 (守护进程模式)
+./start.sh -d
+
+# 后台启动并指定端口
+./start.sh -d -p 8080
+```
+
+**方式二：直接运行**
+
+```bash
+cd release
+python server_forgrey.py          # 默认端口 8000
+python server_forgrey.py --port 8080  # 指定端口
 ```
 
 **服务特性:**
@@ -147,6 +166,14 @@ python server_forgrey.py --port 8080
 - 日志每 **30天** 自动清理一次
 - 日志轮转：每个文件最大 10MB，保留5个备份
 
+**停止服务:**
+
+```bash
+cd release
+./stop.sh           # 停止服务
+./stop.sh -f        # 强制停止
+```
+
 服务启动后访问: http://localhost:8000
 
 ### 4. 测试服务
@@ -155,8 +182,11 @@ python server_forgrey.py --port 8080
 # 单张测试
 python test_service.py --mode single --image test.jpg --algorithm ml
 
-# 批量测试 (默认保存图片)
+# 批量测试 (默认保存图片，默认8并发)
 python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm ml
+
+# 批量测试 (指定并发数)
+python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm ml --workers 16
 
 # 批量测试 (不保存图片)
 python test_service.py --mode batch --data_dir ./data/tamper_data --algorithm ml --no_save_images
@@ -178,6 +208,7 @@ python test_service.py --mode release --data_dir ./test --dataset_name TestSet
 | --algorithm | ml | 算法 (ela/dct/fusion/ml/all) |
 | --server | http://localhost:8000 | 服务地址 |
 | --output | ./test_results | 输出目录 |
+| --workers | 8 | 并发线程数 |
 | --save_images | True | 保存结果图片 (默认开启) |
 | --no_save_images | - | 不保存结果图片 |
 
@@ -498,7 +529,20 @@ python train/pixel_segmentation/train_pixel_fast.py \
 
 ## 更新日志
 
-### 2026-03-27
+### 2026-03-27 v2
+
+- ✅ **测试脚本并发支持**
+  - 支持 `--workers` 参数指定并发线程数
+  - 默认 8 线程并发测试
+  - ThreadPoolExecutor 实现，大幅提升测试速度
+- ✅ **服务启动/停止脚本**
+  - `start.sh`: 一键启动服务
+  - `stop.sh`: 一键停止服务
+  - 支持前台/后台运行
+  - 支持指定端口
+  - 自动检查依赖和端口占用
+
+### 2026-03-27 v1
 
 - ✅ **篡改区域标注优化**
   - 所有算法在原图上绘制矩形框标注篡改区域
