@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
-图像篡改检测服务测试脚本 - 增强版
+图像篡改检测服务测试脚本
 
 用法:
     # 单张图片测试
     python test_service.py --mode single --image test.jpg --algorithm ml
-    
-    # 单张测试并保存结果图片
-    python test_service.py --mode single --image test.jpg --algorithm ml --save_images
     
     # 批量测试 (默认保存图片)
     python test_service.py --mode batch --data_dir ./test --algorithm ml
@@ -27,7 +24,7 @@
     3. 多算法对比测试
     4. 生成完整测试报告 (效果 + 性能 + 资源消耗)
     5. 生成发版规格数据
-    6. 保存推理结果图片 (彩色热力图 + 篡改区域标注)
+    6. 保存推理结果图片 (左侧原图，右侧篡改标注)
 
 数据集结构:
     |-- test
@@ -37,10 +34,10 @@
 输出结果:
     |-- test_results
     |   |-- images/              # 结果图片
-    |   |   |-- xxx_ml_result.jpg      # ML 结果
-    |   |   |-- xxx_ela_result.jpg     # ELA 结果 (彩色热力图)
-    |   |   |-- xxx_dct_result.jpg     # DCT 结果 (彩色热力图)
-    |   |   `-- xxx_fusion_result.jpg  # Fusion 结果 (彩色热力图)
+    |   |   |-- xxx_ml_result.jpg      # ML 结果 (左原图，右标注)
+    |   |   |-- xxx_ela_result.jpg     # ELA 结果
+    |   |   |-- xxx_dct_result.jpg     # DCT 结果
+    |   |   `-- xxx_fusion_result.jpg  # Fusion 结果
     |   |-- test_report_*.json   # 测试报告
     |   `-- compare_report_*.json # 对比报告
 """
@@ -264,7 +261,7 @@ class ResourceMonitor:
 
 
 class TamperDetectionTester:
-    """篡改检测服务测试器 - 增强版"""
+    """篡改检测服务测试器"""
     
     def __init__(self, server_url: str = "http://localhost:8000", output_dir: str = "./test_results"):
         """
@@ -508,7 +505,11 @@ class TamperDetectionTester:
     
     def _save_result_image(self, image_path: str, result: Dict, output_path: str,
                            true_label: int = None, mask_path: str = None):
-        """保存检测结果图片 (彩色热力图 + 篡改标注)"""
+        """
+        保存检测结果图片 (左侧原图，右侧篡改标注)
+        
+        只保存一张图片，左侧显示原图，右侧显示篡改区域标注
+        """
         try:
             image = cv2.imread(image_path)
             if image is None:
@@ -517,125 +518,46 @@ class TamperDetectionTester:
             
             h, w = image.shape[:2]
             
-            # 优先使用服务返回的 marked_image_base64 (有热力图叠加的标注图)
+            # 右侧图片 (篡改标注)
+            right_image = image.copy()
+            
+            # 优先使用服务返回的 marked_image_base64
             marked_image_base64 = result.get('marked_image_base64')
             if marked_image_base64:
                 print(f"  使用服务返回的标注图片", flush=True)
                 marked_image = self.decode_mask_base64(marked_image_base64)
                 if marked_image is not None:
-                    # 创建画布 (原图 + 标注图)
-                    canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
-                    canvas[:h, :w] = image
-                    canvas[:, w:w+20] = 200  # 分隔线
-                    canvas[:h, w+20:] = marked_image
-                    
-                    # 添加文字标注
-                    self._add_text_annotations(canvas[:, w+20:], result, true_label, h, w)
-                    
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    cv2.imwrite(output_path, canvas)
-                    return True
+                    right_image = marked_image
+            else:
+                # 使用 mask_base64 绘制标注
+                mask_base64 = result.get('mask_base64')
+                if mask_base64:
+                    print(f"  使用服务返回的掩码绘制标注", flush=True)
+                    mask = self.decode_mask_base64(mask_base64)
+                    if mask is not None:
+                        # 确保是灰度图
+                        if len(mask.shape) == 3:
+                            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                        
+                        # 绘制轮廓和矩形
+                        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        cv2.drawContours(right_image, contours, -1, (0, 0, 255), 2)
+                        for contour in contours:
+                            area = cv2.contourArea(contour)
+                            if area >= 100:
+                                x, y, cw, ch = cv2.boundingRect(contour)
+                                cv2.rectangle(right_image, (x, y), (x + cw, y + ch), (0, 255, 0), 2)
             
-            # 其次使用 heatmap_base64 (彩色热力图，用于 ela/dct/fusion)
-            heatmap_base64 = result.get('heatmap_base64')
-            if heatmap_base64:
-                print(f"  使用服务返回的彩色热力图", flush=True)
-                heatmap = self.decode_mask_base64(heatmap_base64)
-                if heatmap is not None:
-                    # 确保是彩色图
-                    if len(heatmap.shape) == 2:
-                        heatmap = cv2.applyColorMap((heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                    
-                    # 创建画布 (原图 + 热力图)
-                    canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
-                    canvas[:h, :w] = image
-                    canvas[:, w:w+20] = 200
-                    canvas[:h, w+20:] = heatmap
-                    
-                    # 添加文字标注
-                    self._add_text_annotations(canvas[:, w+20:], result, true_label, h, w)
-                    
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    cv2.imwrite(output_path, canvas)
-                    return True
+            # 添加文字标注到右侧图片
+            self._add_text_annotations(right_image, result, true_label, h, w)
             
-            # 再次使用 mask_base64 (二值掩码)
-            mask_base64 = result.get('mask_base64')
-            if mask_base64:
-                print(f"  使用服务返回的掩码图片", flush=True)
-                mask = self.decode_mask_base64(mask_base64)
-                if mask is not None:
-                    # 确保是灰度图
-                    if len(mask.shape) == 3:
-                        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-                    
-                    # 创建掩码覆盖图
-                    overlay = image.copy()
-                    
-                    # 红色标注篡改区域
-                    overlay[mask > 127] = [0, 0, 255]
-                    
-                    # 半透明混合
-                    result_image = cv2.addWeighted(image, 0.7, overlay, 0.3, 0)
-                    
-                    # 绘制轮廓和矩形
-                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    cv2.drawContours(result_image, contours, -1, (0, 0, 255), 2)
-                    for contour in contours:
-                        area = cv2.contourArea(contour)
-                        if area >= 100:
-                            x, y, cw, ch = cv2.boundingRect(contour)
-                            cv2.rectangle(result_image, (x, y), (x + cw, y + ch), (0, 255, 0), 2)
-                    
-                    # 创建画布
-                    canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
-                    canvas[:h, :w] = image
-                    canvas[:, w:w+20] = 200
-                    canvas[:h, w+20:] = result_image
-                    
-                    # 添加文字标注
-                    self._add_text_annotations(canvas[:, w+20:], result, true_label, h, w)
-                    
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    cv2.imwrite(output_path, canvas)
-                    return True
-            
-            # 最后使用 tamper_regions 绘制矩形
-            tamper_regions = result.get('tamper_regions')
-            if tamper_regions and len(tamper_regions) > 0:
-                print(f"  使用篡改区域坐标绘制 (共{len(tamper_regions)}个区域)", flush=True)
-                pred_image = image.copy()
-                
-                for region in tamper_regions:
-                    x1, y1 = region['left_top']
-                    x2, y2 = region['right_bottom']
-                    cv2.rectangle(pred_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                    cv2.putText(pred_image, "TAMPERED", (x1, y1-5), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                
-                # 添加文字标注
-                self._add_text_annotations(pred_image, result, true_label, h, w)
-                
-                # 创建画布
-                canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
-                canvas[:h, :w] = image
-                canvas[:, w:w+20] = 200
-                canvas[:h, w+20:] = pred_image
-                
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                cv2.imwrite(output_path, canvas)
-                return True
-            
-            # 没有篡改区域，只显示原图 + 预测结果文字
-            print(f"  无篡改区域标注，显示原图 + 预测结果", flush=True)
-            pred_image = image.copy()
-            self._add_text_annotations(pred_image, result, true_label, h, w)
-            
+            # 创建画布 (左侧原图 + 分隔线 + 右侧标注)
             canvas = np.ones((h, w * 2 + 20, 3), dtype=np.uint8) * 255
             canvas[:h, :w] = image
-            canvas[:, w:w+20] = 200
-            canvas[:h, w+20:] = pred_image
+            canvas[:, w:w+20] = 200  # 灰色分隔线
+            canvas[:h, w+20:] = right_image
             
+            # 保存
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             cv2.imwrite(output_path, canvas)
             return True
@@ -821,7 +743,7 @@ class TamperDetectionTester:
                 # 打印前几个错误的详细信息
                 error_count = sum(1 for r in results if r.get('pred_label') == -1)
                 if error_count < 5:
-                    print(f"\n  ⚠️ 图片 {image_file} 检测失败: {error_msg}")
+                    print(f"\n  ⚠️图片 {image_file} 检测失败: {error_msg}")
                 
                 fn += 1 if true_label == 1 else 0
                 fp += 1 if true_label == 0 else 0
@@ -1175,7 +1097,7 @@ class TamperDetectionTester:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='图像篡改检测服务测试脚本 - 增强版')
+    parser = argparse.ArgumentParser(description='图像篡改检测服务测试脚本')
     parser.add_argument('--mode', type=str, 
                         choices=['single', 'batch', 'compare', 'release'], 
                         default='single',
