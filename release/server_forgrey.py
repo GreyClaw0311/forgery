@@ -543,6 +543,14 @@ def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
     confidence = float(result['confidence'])
     mask = result.get('mask')
     
+    # 调试信息
+    if mask is not None:
+        mask_sum = int(mask.sum())
+        mask_nonzero = int(np.count_nonzero(mask))
+        logger.debug(f"ML mask 统计: shape={mask.shape}, sum={mask_sum}, nonzero={mask_nonzero}")
+    else:
+        logger.debug("ML mask 为空")
+    
     # 生成标记图片
     marked_image_base64 = None
     tamper_regions = None
@@ -550,9 +558,10 @@ def _detect_with_ml(image_path: str, original_image: np.ndarray) -> Dict:
     if mask is not None and mask.sum() > 0:
         # 创建标记图片 (在原图上绘制矩形框)
         marked_image_base64 = _create_marked_image(original_image, mask)
-        # 提取篡改区域
-        tamper_regions = _extract_regions(mask)
-        logger.debug(f"ML 检测到篡改区域: {len(tamper_regions) if tamper_regions else 0} 个")
+        # 提取篡改区域 - 使用模型配置的 min_area
+        min_area = getattr(detector, 'min_area_threshold', 100)
+        tamper_regions = _extract_regions(mask, min_area=min_area)
+        logger.debug(f"ML 检测到篡改区域: {len(tamper_regions) if tamper_regions else 0} 个 (min_area={min_area})")
     
     return {
         "is_tampered": is_tampered,
@@ -696,8 +705,16 @@ def _extract_regions(mask: np.ndarray, min_area: int = 100) -> Optional[List[Tam
     Returns:
         篡改区域列表，如果无篡改则返回 null
     """
-    if mask is None or int(mask.sum()) == 0:
+    if mask is None:
+        logger.debug(f"掩码为空，无法提取区域")
         return None
+    
+    mask_sum = int(mask.sum())
+    if mask_sum == 0:
+        logger.debug(f"掩码全为0，无篡改区域")
+        return None
+    
+    logger.debug(f"掩码非零像素数: {mask_sum}")
     
     # 确保是二值图
     if len(mask.shape) == 3:

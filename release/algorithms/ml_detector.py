@@ -278,7 +278,33 @@ class MLDetector:
             
             features = np.array(features_list)
             features_scaled = self.pixel_scaler.transform(features)
-            proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
+            
+            # GPU 推理优化
+            try:
+                import xgboost as xgb
+                
+                # 检查是否是 XGBoost 模型
+                if hasattr(self.pixel_model, 'get_booster'):
+                    booster = self.pixel_model.get_booster()
+                    
+                    # 使用 inplace_predict 进行 GPU 推理 (避免数据传输警告)
+                    # XGBoost 3.x 支持直接对 numpy 数组进行 GPU 预测
+                    proba = booster.inplace_predict(features_scaled)
+                    
+                    # inplace_predict 返回的是原始预测值，需要转换为概率
+                    if len(proba.shape) == 1:
+                        # 二分类：返回的是正类概率
+                        pass
+                    else:
+                        proba = proba[:, 1]
+                else:
+                    # 非 XGBoost 模型
+                    proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
+                    
+            except Exception as e:
+                # 回退到标准推理
+                print(f"GPU 推理失败，回退到 CPU: {e}")
+                proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
             
             inference_time = time.time() - inference_start
             result['inference_time'] = inference_time
