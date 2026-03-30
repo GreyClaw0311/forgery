@@ -16,11 +16,23 @@ scikit-learn>=1.3.0
 lightgbm>=4.0.0
 xgboost>=2.0.0
 
-# GPU 支持 (可选)
-torch>=2.0.0
-
 # 科学计算
 scipy>=1.11.0
 
 # 工具
 tqdm>=4.65.0
+
+# ============================================
+# GPU 支持 - PyTorch + CUDA 12.1
+# ============================================
+# 安装命令 (必须指定 index-url):
+#   pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+#
+# 版本说明:
+#   - NVIDIA Driver 535.x 支持 CUDA 12.2
+#   - PyTorch 2.4.0 + cu121 与 Driver 535.x 兼容
+#   - XGBoost GPU 推理需要 PyTorch 检测 CUDA
+#
+# 验证安装:
+#   python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+# ============================================
