@@ -64,6 +64,10 @@ class MLDetector:
         self.pixel_feature_dim = 57
         self.use_lbp = True  # 默认使用LBP
         
+        # 后处理参数 (从模型配置读取)
+        self.min_area_threshold = 100
+        self.morph_kernel_size = 3
+        
         # 默认路径
         if gb_model_path is None:
             gb_model_path = os.path.join(PROJECT_ROOT, 'models', 'gb_classifier', 'model.pkl')
@@ -110,6 +114,10 @@ class MLDetector:
                 self.pixel_feature_dim = model_config.get('feature_dim', 57)
                 self.use_lbp = model_config.get('use_lbp', True)
                 
+                # 读取后处理参数 (train_pixel_bbox.py 保存的)
+                self.min_area_threshold = model_config.get('min_area_threshold', 100)
+                self.morph_kernel_size = model_config.get('morph_kernel_size', 3)
+                
                 # 自动检测特征维度（从scaler）
                 if self.pixel_scaler is not None:
                     detected_dim = self.pixel_scaler.n_features_in_
@@ -126,6 +134,8 @@ class MLDetector:
                     print(f"像素级模型已加载: {model_path}")
                     print(f"  特征维度: {self.pixel_feature_dim}")
                     print(f"  使用LBP: {self.use_lbp}")
+                    print(f"  最小连通域面积: {self.min_area_threshold}")
+                    print(f"  形态学核大小: {self.morph_kernel_size}")
                     
                     # 尝试启用 GPU 推理 (XGBoost)
                     self._enable_gpu_inference()
@@ -347,12 +357,28 @@ class MLDetector:
         
         return binary_mask
     
-    def _postprocess(self, mask: np.ndarray, min_area: int = 100) -> np.ndarray:
-        """后处理"""
-        kernel = np.ones((3, 3), np.uint8)
+    def _postprocess(self, mask: np.ndarray, min_area: int = None) -> np.ndarray:
+        """
+        后处理 - 使用模型配置的参数
+        
+        Args:
+            mask: 二值掩码
+            min_area: 最小连通域面积 (None 则使用模型配置)
+        
+        Returns:
+            处理后的掩码
+        """
+        if min_area is None:
+            min_area = self.min_area_threshold
+        
+        kernel_size = self.morph_kernel_size
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        
+        # 形态学操作 (开运算去噪，闭运算填充空洞)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
+        # 连通域过滤
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
         result = np.zeros_like(mask)
         
