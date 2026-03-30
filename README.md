@@ -622,6 +622,52 @@ python train/pixel_segmentation/train_pixel_bbox.py \
 
 ---
 
+## 环境配置
+
+### 1. 安装依赖
+
+```bash
+# 基础依赖
+pip install -r requirements.txt
+
+# GPU 支持 - PyTorch + CUDA 12.1 (推荐)
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+
+# 验证 GPU
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+```
+
+### 2. CUDA 版本兼容
+
+| NVIDIA Driver | 支持 CUDA | 推荐 PyTorch |
+|---------------|-----------|--------------|
+| 535.x | CUDA 12.2 | PyTorch 2.4.0 + cu121 |
+| 545.x | CUDA 12.3 | PyTorch 2.4.0 + cu121 |
+| 550.x | CUDA 12.4 | PyTorch 2.5.0 + cu124 |
+
+### 3. 常见问题
+
+#### PyTorch CUDA 不可用
+
+```bash
+# 检查驱动版本
+nvidia-smi
+
+# 重新安装兼容版本
+pip uninstall torch torchvision torchaudio -y
+pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+```
+
+#### XGBoost GPU 推理警告
+
+```
+WARNING: XGBoost is running on: cuda:0, while the input data is on: cpu.
+```
+
+这是正常的，XGBoost 会自动处理 GPU 推理。如果看到此警告，说明 GPU 推理已启用。
+
+---
+
 ## 接口文档
 
 详细接口文档请参考: [docs/api_document.md](docs/api_document.md)
