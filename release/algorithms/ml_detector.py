@@ -242,7 +242,9 @@ class MLDetector:
             from algorithms.features import GlobalFeatureCache, FastPixelFeatureExtractor
             
             # 全局特征预计算
+            cache_start = time.time()
             cache = GlobalFeatureCache(image, quality=90)
+            cache_time = time.time() - cache_start
             
             # 创建快速提取器 (根据模型配置决定是否使用LBP)
             extractor = FastPixelFeatureExtractor(
@@ -258,6 +260,7 @@ class MLDetector:
             stride = 16  # 可以增大到 32 进一步加速
             half = window_size // 2
             
+            extract_start = time.time()
             features_list = []
             positions = []
             
@@ -267,8 +270,12 @@ class MLDetector:
                     features_list.append(feat)
                     positions.append((y, x))
             
+            extract_time = time.time() - extract_start
             preprocess_time = time.time() - preprocess_start
             result['preprocess_time'] = preprocess_time
+            
+            print(f"特征提取统计: 缓存={cache_time*1000:.1f}ms, 窗口提取={extract_time*1000:.1f}ms, "
+                  f"窗口数={len(features_list)}, 总预处理={preprocess_time*1000:.1f}ms")
             
             if len(features_list) == 0:
                 return result
@@ -282,21 +289,19 @@ class MLDetector:
             # GPU 推理优化
             try:
                 import xgboost as xgb
+                import time as time_module
                 
                 # 检查是否是 XGBoost 模型
                 if hasattr(self.pixel_model, 'get_booster'):
                     booster = self.pixel_model.get_booster()
                     
-                    # 使用 inplace_predict 进行 GPU 推理 (避免数据传输警告)
-                    # XGBoost 3.x 支持直接对 numpy 数组进行 GPU 预测
-                    proba = booster.inplace_predict(features_scaled)
+                    # 方案1: 使用标准 predict_proba (更稳定)
+                    # 这是推荐的方式，XGBoost 会自动处理 GPU 推理
+                    gpu_start = time_module.time()
+                    proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
+                    gpu_time = time_module.time() - gpu_start
                     
-                    # inplace_predict 返回的是原始预测值，需要转换为概率
-                    if len(proba.shape) == 1:
-                        # 二分类：返回的是正类概率
-                        pass
-                    else:
-                        proba = proba[:, 1]
+                    print(f"XGBoost GPU 推理: {len(features_scaled)} 样本, 耗时: {gpu_time*1000:.1f}ms")
                 else:
                     # 非 XGBoost 模型
                     proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
@@ -304,10 +309,18 @@ class MLDetector:
             except Exception as e:
                 # 回退到标准推理
                 print(f"GPU 推理失败，回退到 CPU: {e}")
+                import traceback
+                traceback.print_exc()
                 proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
             
             inference_time = time.time() - inference_start
             result['inference_time'] = inference_time
+            
+            # 调试信息
+            tamper_count = np.sum(proba > self.pixel_threshold)
+            print(f"推理统计: 样本数={len(proba)}, 预测概率范围=[{proba.min():.4f}, {proba.max():.4f}], "
+                  f"平均={proba.mean():.4f}, 推理耗时={inference_time*1000:.1f}ms")
+            print(f"阈值={self.pixel_threshold}, 大于阈值的样本数={tamper_count} ({tamper_count/len(proba)*100:.1f}%)")
             
             # 生成掩码
             mask = self._generate_mask(proba, positions, (h, w))
@@ -378,8 +391,13 @@ class MLDetector:
         # 二值化
         binary_mask = (heatmap > self.pixel_threshold).astype(np.uint8) * 255
         
+        print(f"Mask 生成: heatmap范围=[{heatmap.min():.4f}, {heatmap.max():.4f}], "
+              f"阈值={self.pixel_threshold}, 非零像素={np.sum(binary_mask > 0)}")
+        
         # 后处理
         binary_mask = self._postprocess(binary_mask)
+        
+        print(f"后处理完成: 非零像素={np.sum(binary_mask > 0)}")
         
         return binary_mask
     
