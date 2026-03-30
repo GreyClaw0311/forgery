@@ -286,31 +286,25 @@ class MLDetector:
             features = np.array(features_list)
             features_scaled = self.pixel_scaler.transform(features)
             
-            # GPU 推理优化
+            # XGBoost GPU 推理
+            # 注意：XGBoost 会自动使用 GPU，但输入数据在 CPU 时会有数据传输
+            # 这是正常的，只要模型在 GPU 上，推理就会加速
             try:
                 import xgboost as xgb
                 import time as time_module
+                gpu_start = time_module.time()
                 
-                # 检查是否是 XGBoost 模型
-                if hasattr(self.pixel_model, 'get_booster'):
-                    booster = self.pixel_model.get_booster()
-                    
-                    # 方案1: 使用标准 predict_proba (更稳定)
-                    # 这是推荐的方式，XGBoost 会自动处理 GPU 推理
-                    gpu_start = time_module.time()
-                    proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
-                    gpu_time = time_module.time() - gpu_start
-                    
-                    print(f"XGBoost GPU 推理: {len(features_scaled)} 样本, 耗时: {gpu_time*1000:.1f}ms")
-                else:
-                    # 非 XGBoost 模型
-                    proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
-                    
+                # 使用 predict 返回概率（二分类返回正类概率）
+                booster = self.pixel_model.get_booster()
+                dmat = xgb.DMatrix(features_scaled)
+                proba = booster.predict(dmat)
+                
+                gpu_time = time_module.time() - gpu_start
+                print(f"XGBoost GPU 推理: {len(features_scaled)} 样本, 耗时: {gpu_time*1000:.1f}ms")
+                
             except Exception as e:
                 # 回退到标准推理
-                print(f"GPU 推理失败，回退到 CPU: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"XGBoost 推理失败: {e}")
                 proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
             
             inference_time = time.time() - inference_start

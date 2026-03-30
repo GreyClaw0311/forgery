@@ -649,6 +649,39 @@ python train/pixel_segmentation/train_pixel_bbox.py \
 
 ## 更新日志
 
+### 2026-03-30 v9 ⭐性能瓶颈定位
+
+- ✅ **添加特征提取时间统计**
+  - ELA/Noise/Edge/DCT/LBP/FFT/LocalContrast 各阶段耗时
+  - 快速定位性能瓶颈
+- ✅ **XGBoost GPU 推理优化**
+  - 使用 DMatrix + predict 方式
+  - 避免数据设备不匹配警告
+
+### 性能瓶颈排查
+
+**日志输出示例**:
+```
+ELA 预计算: 50.2ms
+Noise 预计算: 10.5ms
+Edge 预计算: 15.3ms
+DCT 预计算: 500.2ms    ← 可能的瓶颈
+LBP 预计算: 100.5ms
+FFT 预计算: 20.3ms
+LocalContrast 预计算: 5.1ms
+GlobalFeatureCache 总耗时: 702.1ms
+特征提取统计: 缓存=702ms, 窗口提取=300ms, 窗口数=3600
+XGBoost GPU 推理: 3600 样本, 耗时: 50.2ms
+```
+
+**常见瓶颈**:
+| 阶段 | 正常耗时 | 慢的可能原因 |
+|------|----------|--------------|
+| ELA | < 100ms | 图片过大 |
+| DCT | < 200ms | 双重循环未优化 |
+| LBP | < 50ms | skimage 未安装 |
+| 窗口提取 | < 500ms | percentile 调用过多 |
+
 ### 2026-03-30 v8 ⭐推理调试优化
 
 - ✅ **修复 GPU 推理问题**

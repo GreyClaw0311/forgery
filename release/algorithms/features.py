@@ -290,6 +290,9 @@ class GlobalFeatureCache:
             image: BGR 图像
             quality: ELA JPEG 质量
         """
+        import time
+        start_time = time.time()
+        
         self.image = image
         self.h, self.w = image.shape[:2]
         
@@ -299,14 +302,38 @@ class GlobalFeatureCache:
         else:
             self.gray = image.astype(np.float32)
         
-        # 预计算全局特征图
+        # 预计算全局特征图（带时间统计）
+        t0 = time.time()
         self._compute_ela_map(quality)
+        t1 = time.time()
+        print(f"  ELA 预计算: {(t1-t0)*1000:.1f}ms")
+        
         self._compute_noise_map()
+        t2 = time.time()
+        print(f"  Noise 预计算: {(t2-t1)*1000:.1f}ms")
+        
         self._compute_edge_map()
+        t3 = time.time()
+        print(f"  Edge 预计算: {(t3-t2)*1000:.1f}ms")
+        
         self._compute_dct_map()
+        t4 = time.time()
+        print(f"  DCT 预计算: {(t4-t3)*1000:.1f}ms")
+        
         self._compute_lbp_map()
+        t5 = time.time()
+        print(f"  LBP 预计算: {(t5-t4)*1000:.1f}ms")
+        
         self._compute_frequency_map()
+        t6 = time.time()
+        print(f"  FFT 预计算: {(t6-t5)*1000:.1f}ms")
+        
         self._compute_local_contrast_map()
+        t7 = time.time()
+        print(f"  LocalContrast 预计算: {(t7-t6)*1000:.1f}ms")
+        
+        total_time = time.time() - start_time
+        print(f"  GlobalFeatureCache 总耗时: {total_time*1000:.1f}ms")
     
     def _compute_ela_map(self, quality: int):
         """预计算 ELA 特征图 (一次 JPEG 编解码)"""
