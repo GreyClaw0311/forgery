@@ -243,6 +243,11 @@ class MLDetector:
             
             # 生成掩码
             mask = self._generate_mask(proba, positions, (h, w))
+            
+            # 确保 mask 尺寸与原图一致
+            if mask.shape[:2] != (h, w):
+                mask = cv2.resize(mask, (w, h))
+            
             result['mask'] = mask
             
         except Exception as e:
@@ -254,13 +259,20 @@ class MLDetector:
     
     def _generate_mask(self, proba: np.ndarray, positions: list,
                        shape: Tuple[int, int]) -> np.ndarray:
-        """生成篡改区域掩码"""
+        """生成篡改区域掩码
+        
+        改进点:
+        1. 扩展填充范围，确保边缘区域也被覆盖
+        2. 使用 half_stride = stride 确保完整覆盖
+        3. 边缘区域用最近值填充（高效方式）
+        """
         h, w = shape
         heatmap = np.zeros((h, w), dtype=np.float32)
         count_map = np.zeros((h, w), dtype=np.float32)
         
         stride = 16
-        half_stride = stride // 2
+        # 扩大填充范围，确保边缘覆盖
+        half_stride = stride  # 改为 stride (16)，而不是 stride//2 (8)
         
         for (y, x), p in zip(positions, proba):
             y1 = max(0, y - half_stride)
@@ -274,6 +286,26 @@ class MLDetector:
         # 归一化
         mask = count_map > 0
         heatmap[mask] = heatmap[mask] / count_map[mask]
+        
+        # 边缘区域处理：用边界值扩展
+        # 快速填充边缘 16 像素区域
+        edge_size = stride
+        
+        # 上边缘
+        if edge_size < h and count_map[edge_size, :].any():
+            heatmap[:edge_size, :] = heatmap[edge_size, :]
+        
+        # 下边缘
+        if h - edge_size > 0 and count_map[h - edge_size - 1, :].any():
+            heatmap[h - edge_size:, :] = heatmap[h - edge_size - 1, :]
+        
+        # 左边缘
+        if edge_size < w and count_map[:, edge_size].any():
+            heatmap[:, :edge_size] = np.tile(heatmap[:, edge_size].reshape(-1, 1), (1, edge_size))
+        
+        # 右边缘
+        if w - edge_size > 0 and count_map[:, w - edge_size - 1].any():
+            heatmap[:, w - edge_size:] = np.tile(heatmap[:, w - edge_size - 1].reshape(-1, 1), (1, edge_size))
         
         # 二值化
         binary_mask = (heatmap > self.pixel_threshold).astype(np.uint8) * 255
