@@ -138,17 +138,29 @@ release/models/
 ```bash
 cd release
 
-# 前台启动 (默认端口 8000)
+# 后台启动 (默认模式，端口 8000)
 ./start.sh
 
-# 指定端口启动
+# 后台启动，指定端口
 ./start.sh -p 8080
 
-# 后台启动 (守护进程模式)
-./start.sh -d
+# 前台启动 (调试模式)
+./start.sh -f
 
-# 后台启动并指定端口
-./start.sh -d -p 8080
+# 前台启动，指定端口
+./start.sh -f -p 8080
+```
+
+**服务管理命令**：
+```bash
+# 停止服务
+./stop.sh
+
+# 查看日志
+tail -f logs/server.log
+
+# 查看服务状态
+curl http://localhost:8000/health
 ```
 
 **方式二：直接运行**
@@ -694,6 +706,21 @@ WARNING: XGBoost is running on: cuda:0, while the input data is on: cpu.
 ---
 
 ## 更新日志
+
+### 2026-03-30 v11 ⭐服务启动优化
+
+- ✅ **start.sh 默认后台运行**
+  - 默认以守护进程模式启动
+  - 新增 `-f` 参数前台运行 (调试模式)
+  - 更新文档说明
+
+使用方法:
+```bash
+./start.sh        # 后台启动 (默认)
+./start.sh -p 8080  # 后台启动，指定端口
+./start.sh -f      # 前台启动 (调试)
+./stop.sh         # 停止服务
+```
 
 ### 2026-03-30 v10 ⭐LBP计算优化 (10x 加速)
 

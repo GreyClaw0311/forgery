@@ -20,7 +20,7 @@ set -e
 
 # 默认配置
 PORT=8000
-DAEMON=false
+DAEMON=true  # 默认后台运行
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PID_FILE="$SCRIPT_DIR/server.pid"
 LOG_DIR="$SCRIPT_DIR/logs"
@@ -38,14 +38,14 @@ usage() {
     echo ""
     echo "选项:"
     echo "  -p, --port PORT    指定服务端口 (默认: 8000)"
-    echo "  -d, --daemon       后台运行 (守护进程模式)"
+    echo "  -f, --foreground   前台运行 (调试模式)"
     echo "  -h, --help         显示帮助信息"
     echo ""
     echo "示例:"
-    echo "  $0                 # 前台启动，端口 8000"
-    echo "  $0 -p 8080         # 前台启动，端口 8080"
-    echo "  $0 -d              # 后台启动，端口 8000"
-    echo "  $0 -d -p 8080      # 后台启动，端口 8080"
+    echo "  $0                 # 后台启动，端口 8000 (默认)"
+    echo "  $0 -p 8080         # 后台启动，端口 8080"
+    echo "  $0 -f              # 前台启动 (调试模式)"
+    echo "  $0 -f -p 8080      # 前台启动，端口 8080"
 }
 
 # 解析参数
@@ -55,8 +55,8 @@ while [[ $# -gt 0 ]]; do
             PORT="$2"
             shift 2
             ;;
-        -d|--daemon)
-            DAEMON=true
+        -f|--foreground)
+            DAEMON=false
             shift
             ;;
         -h|--help)
@@ -144,7 +144,7 @@ start_foreground() {
     echo "  图像篡改检测服务"
     echo "================================"
     echo "端口: $PORT"
-    echo "模式: 前台运行"
+    echo "模式: 前台运行 (调试模式)"
     echo "日志: $LOG_FILE"
     echo "================================"
     echo ""
