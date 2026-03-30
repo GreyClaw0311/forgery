@@ -499,58 +499,87 @@ python train/gb_classifier/train_gb.py \
 
 ### 训练像素级模型
 
-**推荐使用极速优化版** (支持 GPU 加速):
+**最终版训练脚本** (49维特征 + GPU加速):
 
 ```bash
 # 安装依赖
 pip install scikit-image xgboost
 
 # GPU 加速训练 (推荐)
-python train/pixel_segmentation/train_pixel_fast.py \
+python train/pixel_segmentation/train_pixel.py \
     --data_dir /path/to/processed_data \
-    --model-type xgb \
+    --model_type xgb \
     --preset balanced \
     --num_workers 16
 
-# CPU 训练 (兼容)
-python train/pixel_segmentation/train_pixel_fast.py \
+# 保存数据集缓存 (避免重复构建)
+python train/pixel_segmentation/train_pixel.py \
     --data_dir /path/to/processed_data \
-    --model-type lgb \
-    --preset balanced \
-    --num_workers 16
+    --cache_dataset ./cache/dataset.npz
+
+# 从缓存加载
+python train/pixel_segmentation/train_pixel.py \
+    --data_dir /path/to/processed_data \
+    --load_cache ./cache/dataset.npz
+
+# 高召回配置 (优先召回率)
+python train/pixel_segmentation/train_pixel.py \
+    --data_dir /path/to/processed_data \
+    --preset high_recall
 ```
+
+**训练参数**:
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--data_dir` | 数据目录 | 必填 |
+| `--output_dir` | 模型输出目录 | `./release/models/pixel_segmentation` |
+| `--preset` | 预设配置 | `balanced` |
+| `--model_type` | 模型类型 | `xgb` |
+| `--window_size` | 窗口大小 | 32 |
+| `--stride` | 滑动步长 | 16 |
+| `--num_workers` | 进程数 | 8 |
+| `--cache_dataset` | 保存缓存路径 | - |
+| `--load_cache` | 加载缓存路径 | - |
 
 **模型类型对比**:
 
 | 模型 | 训练 | 推理 | GPU 支持 | 推荐 |
 |------|------|------|----------|------|
 | **xgb** | GPU | GPU | ✅ 原生支持 | ⭐⭐⭐⭐⭐ |
-| lgb | CPU | CPU | ❌ 需特殊编译 | ⭐⭐⭐ |
-| rf | CPU | CPU | ❌ sklearn 限制 | ⭐⭐ |
+| lgb | CPU | CPU | ❌ | ⭐⭐⭐ |
+| rf | CPU | CPU | ❌ | ⭐⭐ |
 | ensemble | 混合 | 混合 | 部分 | ⭐⭐⭐ |
 
 **预设配置对比**:
 
-| 参数 | default | balanced (推荐) | aggressive |
-|------|---------|-----------------|------------|
-| MAX_SAMPLES | 3000 | **5000** | **8000** |
-| 篡改过采样 | 3x | **5x** | **10x** |
-| 正常欠采样 | 2x | **1.5x** | **1x** |
-| 类别权重 | 10 | **20** | **50** |
-| 树数量 | 300 | **500** | **800** |
-| **预期F1** | ~0.58 | **~0.70** | **~0.75** |
+| 参数 | default | balanced (推荐) | high_recall | aggressive |
+|------|---------|-----------------|-------------|------------|
+| MAX_SAMPLES | 3000 | **5000** | **6000** | **8000** |
+| 篡改过采样 | 3x | **5x** | **8x** | **10x** |
+| 正常欠采样 | 2x | **1.5x** | **1.2x** | **1x** |
+| 类别权重 | 10 | **20** | **30** | **50** |
+| 树数量 | 300 | **500** | **600** | **800** |
+
+**特征维度**: 49维 (移除无效LBP特征)
 
 **训练输出示例**:
 
 ```
-处理 train 集: 30644 张图片 (16 进程)
-  [████████████░░░░░░░░] 15000/30644 (48.9%) | 速度: 125.3 张/s | 已用: 2.0min | 预计: 2.1min
+处理 train 集: 10000 张图片 (16 进程)
+  [████████████████████] 10000/10000 (100%) | 速度: 125.3 张/s | 已用: 1.3min
 
 数据集统计:
-  处理时间: 1250.5 秒 (20.8 分钟)
+  处理时间: 800.5 秒
   正常图片: 283 张
-  篡改图片: 30361 张
-  总样本数: 45,231,892
+  篡改图片: 9717 张
+  总样本数: 25,231,892
+  特征维度: 49
+
+连通域分析 (检测框相关):
+  真实连通域数: 8423
+  预测连通域数: 8102
+  预测平均大小: 1256.3
 ```
 
 ---
@@ -581,6 +610,20 @@ python train/pixel_segmentation/train_pixel_fast.py \
 ---
 
 ## 更新日志
+
+### 2026-03-30 v4 ⭐训练脚本合并
+
+- ✅ **合并三个训练脚本为一个**
+  - 保留 `train_pixel.py`，删除 `train_pixel_fast.py` 和 `train_pixel_optimized.py`
+  - 统一使用 49 维特征 (移除无效 LBP)
+- ✅ **新增功能**
+  - 数据集缓存 (`--cache_dataset` / `--load_cache`)
+  - 连通域分析 (与检测框准确率相关)
+  - 4 种预设配置 (`default`/`balanced`/`high_recall`/`aggressive`)
+  - GPU 加速参数 (`device='cuda:0'`)
+- ✅ **检测框准确率相关优化**
+  - 训练时分析连通域数量和大小
+  - 帮助评估模型对检测框准确率的影响
 
 ### 2026-03-30 v3 ⭐GPU 加速
 
