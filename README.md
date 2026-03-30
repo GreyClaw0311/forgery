@@ -649,6 +649,41 @@ python train/pixel_segmentation/train_pixel_bbox.py \
 
 ## 更新日志
 
+### 2026-03-30 v7 ⭐GPU推理优化
+
+- ✅ **修复 XGBoost GPU 推理警告**
+  - 使用 `inplace_predict` 方法避免数据设备不匹配警告
+  - 自动检测 XGBoost 模型并使用最优推理方式
+- ✅ **错误处理增强**
+  - GPU 推理失败时自动回退到 CPU
+  - 打印详细错误信息便于调试
+
+### 已知问题
+
+#### PyTorch CUDA 版本不兼容
+
+**错误信息**:
+```
+CUDA initialization: The NVIDIA driver on your system is too old (found version 12020)
+```
+
+**解决方案**:
+```bash
+# 激活服务环境
+conda activate forgrey_server
+
+# 卸载当前 PyTorch
+pip uninstall torch torchvision torchaudio
+
+# 安装 CUDA 12.1 兼容版本
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+**验证安装**:
+```bash
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
+```
+
 ### 2026-03-30 v6 ⭐推理代码兼容检测框优化模型
 
 - ✅ **推理代码自动适配训练参数**
