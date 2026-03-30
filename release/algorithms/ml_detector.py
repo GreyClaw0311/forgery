@@ -243,7 +243,7 @@ class MLDetector:
             
             # 全局特征预计算
             cache_start = time.time()
-            cache = GlobalFeatureCache(image, quality=90)
+            cache = GlobalFeatureCache(image, quality=90, use_lbp=self.use_lbp)
             cache_time = time.time() - cache_start
             
             # 创建快速提取器 (根据模型配置决定是否使用LBP)

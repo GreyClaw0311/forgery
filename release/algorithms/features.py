@@ -282,19 +282,21 @@ class GlobalFeatureCache:
     避免每个窗口重复计算 ELA/DCT 等耗时操作
     """
     
-    def __init__(self, image: np.ndarray, quality: int = 90):
+    def __init__(self, image: np.ndarray, quality: int = 90, use_lbp: bool = False):
         """
         预计算全局特征图
         
         Args:
             image: BGR 图像
             quality: ELA JPEG 质量
+            use_lbp: 是否计算 LBP 特征 (49维模型不需要，设为False可大幅加速)
         """
         import time
         start_time = time.time()
         
         self.image = image
         self.h, self.w = image.shape[:2]
+        self.use_lbp = use_lbp
         
         # 转换灰度图
         if len(image.shape) == 3:
@@ -320,9 +322,15 @@ class GlobalFeatureCache:
         t4 = time.time()
         print(f"  DCT 预计算: {(t4-t3)*1000:.1f}ms")
         
-        self._compute_lbp_map()
-        t5 = time.time()
-        print(f"  LBP 预计算: {(t5-t4)*1000:.1f}ms")
+        # LBP 只在需要时计算 (49维模型不需要，跳过可节省 90% 时间)
+        if self.use_lbp:
+            self._compute_lbp_map()
+            t5 = time.time()
+            print(f"  LBP 预计算: {(t5-t4)*1000:.1f}ms")
+        else:
+            self.lbp_map = None
+            t5 = t4
+            print(f"  LBP 预计算: 跳过 (use_lbp=False)")
         
         self._compute_frequency_map()
         t6 = time.time()
@@ -545,10 +553,15 @@ class FastPixelFeatureExtractor:
         edge_mag_patch = self.cache.edge_mag[y1:y2, x1:x2]
         dct_dc_patch = self.cache.dct_dc_full[y1:y2, x1:x2]
         dct_ac_patch = self.cache.dct_ac_std_full[y1:y2, x1:x2]
-        lbp_patch = self.cache.lbp_map[y1:y2, x1:x2]
         freq_patch = self.cache.freq_magnitude[y1:y2, x1:x2]
         local_var_patch = self.cache.local_var[y1:y2, x1:x2]
         local_contrast_patch = self.cache.local_contrast[y1:y2, x1:x2]
+        
+        # LBP 只在需要时提取
+        if self.use_lbp and self.cache.lbp_map is not None:
+            lbp_patch = self.cache.lbp_map[y1:y2, x1:x2]
+        else:
+            lbp_patch = None
         
         # ===== 快速 percentile 计算函数 =====
         def fast_percentile(arr, q):
@@ -633,11 +646,14 @@ class FastPixelFeatureExtractor:
             features.extend([0] * 5)
         
         # ===== 7. LBP特征 (8个) - 从预计算LBP图提取 (可选) =====
-        if self.use_lbp:
+        if self.use_lbp and lbp_patch is not None:
             lbp_hist, _ = np.histogram(lbp_patch, bins=8, range=(0, 256))
             lbp_sum = lbp_hist.sum() + 1e-8
             lbp_hist = lbp_hist.astype(np.float32) / lbp_sum
             features.extend(lbp_hist.tolist())
+        elif self.use_lbp:
+            # use_lbp=True 但 lbp_map 未计算，补零
+            features.extend([0.0] * 8)
         
         # ===== 8. 频域特征 (6个) - 从预计算频谱图提取 =====
         h_p, w_p = freq_patch.shape
