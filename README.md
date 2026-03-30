@@ -649,6 +649,18 @@ python train/pixel_segmentation/train_pixel_bbox.py \
 
 ## 更新日志
 
+### 2026-03-30 v6 ⭐推理代码兼容检测框优化模型
+
+- ✅ **推理代码自动适配训练参数**
+  - 自动读取模型保存的 `min_area_threshold`
+  - 自动读取模型保存的 `morph_kernel_size`
+  - 后处理使用训练时的最优参数
+- ✅ **49维特征支持**
+  - `train_pixel_bbox.py` 训练的模型自动使用 49 维特征
+  - 推理代码自动检测并适配
+- ✅ **GPU 推理自动启用**
+  - XGBoost 模型自动检测 CUDA 并启用 GPU
+
 ### 2026-03-30 v5 ⭐检测框优化训练
 
 - ✅ **新增检测框优化训练脚本**
