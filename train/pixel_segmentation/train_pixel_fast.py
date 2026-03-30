@@ -170,7 +170,7 @@ class Config:
         }
     
     def get_xgb_params(self):
-        """获取 XGBoost 参数"""
+        """获取 XGBoost 参数 (GPU 加速)"""
         return {
             'objective': 'binary:logistic',
             'eval_metric': 'logloss',
@@ -180,6 +180,9 @@ class Config:
             'colsample_bytree': 0.8,
             'n_jobs': -1,
             'scale_pos_weight': self.SCALE_POS_WEIGHT,
+            # GPU 加速参数
+            'tree_method': 'hist',    # 使用 histogram 算法
+            'device': 'cuda:0',       # 使用 GPU
         }
 
 

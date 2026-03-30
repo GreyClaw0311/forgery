@@ -126,6 +126,9 @@ class MLDetector:
                     print(f"像素级模型已加载: {model_path}")
                     print(f"  特征维度: {self.pixel_feature_dim}")
                     print(f"  使用LBP: {self.use_lbp}")
+                    
+                    # 尝试启用 GPU 推理 (XGBoost)
+                    self._enable_gpu_inference()
                 else:
                     self.pixel_feature_dim = 57
                     self.use_lbp = True
@@ -134,6 +137,35 @@ class MLDetector:
                 print(f"像素级模型加载失败: {e}")
         else:
             print(f"警告: 像素级模型不存在: {model_path}")
+    
+    def _enable_gpu_inference(self):
+        """尝试启用 GPU 推理 (XGBoost)"""
+        try:
+            import xgboost as xgb
+            
+            # 检查是否是 XGBoost 模型
+            if hasattr(self.pixel_model, 'get_params'):
+                params = self.pixel_model.get_params()
+                
+                # 如果模型是 XGBoost，尝试设置 GPU
+                if hasattr(self.pixel_model, 'set_params'):
+                    # 检查 CUDA 是否可用
+                    if HAS_TORCH:
+                        import torch
+                        if torch.cuda.is_available():
+                            # 设置 GPU 推理参数
+                            self.pixel_model.set_params(
+                                device='cuda:0',
+                                tree_method='hist'
+                            )
+                            print(f"  ✓ GPU 推理已启用: cuda:0")
+                            return True
+                    
+                    print(f"  注: GPU 不可用，使用 CPU 推理")
+        except Exception as e:
+            print(f"  GPU 推理启用失败: {e}")
+        
+        return False
     
     def predict(self, image_path: str) -> Dict:
         """
