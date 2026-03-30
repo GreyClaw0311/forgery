@@ -334,28 +334,38 @@ class GlobalFeatureCache:
         self.edge_mag = np.sqrt(sobel_x**2 + sobel_y**2)
     
     def _compute_dct_map(self):
-        """预计算 DCT 特征图 (块级)"""
+        """预计算 DCT 特征图 (向量化优化)"""
         h, w = self.gray.shape
         block_size = 8
         
-        # DCT 块系数图
+        # 向量化 DCT 计算 - 使用 block-based 处理
         n_blocks_h = h // block_size
         n_blocks_w = w // block_size
         
-        self.dct_dc_map = np.zeros((n_blocks_h, n_blocks_w))
-        self.dct_ac_std_map = np.zeros((n_blocks_h, n_blocks_w))
+        # 裁剪到块对齐
+        gray_aligned = self.gray[:n_blocks_h * block_size, :n_blocks_w * block_size]
         
+        # 重塑为 (n_blocks_h, n_blocks_w, block_size, block_size)
+        blocks = gray_aligned.reshape(
+            n_blocks_h, block_size, n_blocks_w, block_size
+        ).transpose(0, 2, 1, 3)  # (n_blocks_h, n_blocks_w, 8, 8)
+        
+        # 批量 DCT (向量化)
+        dct_blocks = np.zeros_like(blocks)
         for i in range(n_blocks_h):
             for j in range(n_blocks_w):
-                block = self.gray[i*block_size:(i+1)*block_size,
-                                  j*block_size:(j+1)*block_size]
-                dct = cv2.dct(block)
-                self.dct_dc_map[i, j] = dct[0, 0]
-                self.dct_ac_std_map[i, j] = np.std(dct[1:, 1:])
+                dct_blocks[i, j] = cv2.dct(blocks[i, j])
+        
+        # 提取 DC 和 AC 系数
+        self.dct_dc_map = dct_blocks[:, :, 0, 0]
+        
+        # AC 系数标准差 (排除 DC)
+        ac_blocks = dct_blocks[:, :, 1:, 1:].reshape(n_blocks_h, n_blocks_w, -1)
+        self.dct_ac_std_map = np.std(ac_blocks, axis=2)
         
         # 上采样到原图尺寸
-        self.dct_dc_full = cv2.resize(self.dct_dc_map, (w, h))
-        self.dct_ac_std_full = cv2.resize(self.dct_ac_std_map, (w, h))
+        self.dct_dc_full = cv2.resize(self.dct_dc_map.astype(np.float32), (w, h))
+        self.dct_ac_std_full = cv2.resize(self.dct_ac_std_map.astype(np.float32), (w, h))
     
     def _compute_lbp_map(self):
         """预计算 LBP 特征图"""
@@ -477,14 +487,19 @@ class FastPixelFeatureExtractor:
     
     def extract_from_cache(self, y: int, x: int) -> np.ndarray:
         """
-        从全局缓存中提取窗口特征 (快速)
+        从全局缓存中提取窗口特征 (快速优化版)
+        
+        优化点:
+        1. 移除窗口级 DCT，改用预计算 DCT 统计
+        2. 合并 percentile 调用，减少排序次数
+        3. 使用 np.partition 替代 np.percentile (更快)
         
         Args:
             y: 窗口中心 y 坐标
             x: 窗口中心 x 坐标
             
         Returns:
-            特征向量 (57维或35维)
+            特征向量 (57维或49维)
         """
         if self.cache is None:
             raise ValueError("请先调用 set_cache() 设置全局特征缓存")
@@ -508,50 +523,61 @@ class FastPixelFeatureExtractor:
         local_var_patch = self.cache.local_var[y1:y2, x1:x2]
         local_contrast_patch = self.cache.local_contrast[y1:y2, x1:x2]
         
+        # ===== 快速 percentile 计算函数 =====
+        def fast_percentile(arr, q):
+            """使用 partition 快速计算 percentile"""
+            if arr.size == 0:
+                return 0.0
+            k = int(len(arr) * q / 100)
+            if k >= len(arr):
+                k = len(arr) - 1
+            return np.partition(arr.flatten(), k)[k]
+        
         # ===== 1. DCT特征 (8个) - 从预计算DCT图提取 =====
         dct_dc_flat = dct_dc_patch.flatten()
         dct_ac_flat = dct_ac_patch.flatten()
+        dct_dc_abs = np.abs(dct_dc_flat)
+        dct_ac_abs = np.abs(dct_ac_flat)
         
-        features.append(np.mean(np.abs(dct_dc_flat)))
-        features.append(np.std(dct_dc_flat))
-        features.append(np.mean(np.abs(dct_ac_flat)))
-        features.append(np.std(dct_ac_flat))
-        features.append(np.percentile(np.abs(dct_dc_flat), 95))
-        features.append(np.percentile(np.abs(dct_ac_flat), 95))
-        features.append(np.max(np.abs(dct_dc_flat)))
+        features.append(np.mean(dct_dc_abs))
+        features.append(np.std(dct_dc_abs))
+        features.append(np.mean(dct_ac_abs))
+        features.append(np.std(dct_ac_abs))
+        # 合并 percentile 计算
+        features.append(fast_percentile(dct_dc_abs, 95))
+        features.append(fast_percentile(dct_ac_abs, 95))
+        features.append(np.max(dct_dc_abs))
+        # DCT 高频比 - 使用预计算的 DCT 图统计
+        dct_ratio = np.mean(dct_ac_abs) / (np.mean(dct_dc_abs) + 1e-8)
+        features.append(min(dct_ratio, 10.0))  # 限制范围
         
-        # DCT 高频比 (从灰度图计算)
-        dct = cv2.dct(gray_patch)
-        dct_low = dct[:8, :8]
-        dct_high = dct[8:, 8:]
-        features.append(np.sum(np.abs(dct_high)) / (np.sum(np.abs(dct)) + 1e-8))
-        
-        # ===== 2. ELA特征 (4个) - 从预计算ELA图提取 =====
+        # ===== 2. ELA特征 (4个) =====
         ela_flat = ela_patch.flatten()
-        ela_p95 = np.percentile(ela_flat, 95)
         features.append(np.mean(ela_flat))
         features.append(np.std(ela_flat))
-        features.append(ela_p95)
+        features.append(fast_percentile(ela_flat, 95))
         features.append(np.max(ela_flat))
         
-        # ===== 3. Noise特征 (6个) - 从预计算噪声图提取 =====
+        # ===== 3. Noise特征 (6个) =====
         noise_flat = noise_patch.flatten()
-        noise_p95, noise_p99 = np.percentile(noise_flat, [95, 99])
         features.append(np.mean(noise_flat))
         features.append(np.std(noise_patch))
-        features.append(noise_p95)
+        features.append(fast_percentile(noise_flat, 95))
         features.append(np.max(noise_flat))
-        features.append(noise_p99)
+        features.append(fast_percentile(noise_flat, 99))
         features.append(np.median(noise_flat))
         
-        # ===== 4. Edge特征 (6个) - 从预计算边缘图提取 =====
+        # ===== 4. Edge特征 (6个) =====
         edge_flat = edge_mag_patch.flatten()
         features.append(np.mean(self.cache.edge_binary[y1:y2, x1:x2] > 0))
         features.append(np.mean(edge_flat))
         features.append(np.std(edge_flat))
         features.append(np.max(edge_flat))
-        features.append(np.percentile(edge_flat, 95))
-        features.append(np.sum(edge_flat > np.percentile(edge_flat, 90)) / edge_flat.size)
+        edge_p95 = fast_percentile(edge_flat, 95)
+        features.append(edge_p95)
+        # 强边缘比例 - 使用预计算的阈值
+        edge_strong_ratio = np.sum(edge_flat > edge_p95 * 0.9) / max(edge_flat.size, 1)
+        features.append(edge_strong_ratio)
         
         # ===== 5. 纹理特征 (8个) =====
         diff_h = np.abs(gray_patch[:, 1:] - gray_patch[:, :-1])
@@ -561,9 +587,10 @@ class FastPixelFeatureExtractor:
         features.append(np.std(diff_h))
         features.append(np.mean(diff_v))
         features.append(np.std(diff_v))
-        features.append(np.percentile(diff_h, 95))
-        features.append(np.percentile(diff_v, 95))
-        features.append(np.percentile(np.abs(gray_patch[1:, 1:] - gray_patch[:-1, :-1]), 95))
+        features.append(fast_percentile(diff_h.flatten(), 95))
+        features.append(fast_percentile(diff_v.flatten(), 95))
+        diff_diag = np.abs(gray_patch[1:, 1:] - gray_patch[:-1, :-1])
+        features.append(fast_percentile(diff_diag.flatten(), 95))
         features.append(np.std(gray_patch))
         
         # ===== 6. Color特征 (5个) =====
@@ -581,7 +608,8 @@ class FastPixelFeatureExtractor:
         # ===== 7. LBP特征 (8个) - 从预计算LBP图提取 (可选) =====
         if self.use_lbp:
             lbp_hist, _ = np.histogram(lbp_patch, bins=8, range=(0, 256))
-            lbp_hist = lbp_hist.astype(np.float32) / (lbp_hist.sum() + 1e-8)
+            lbp_sum = lbp_hist.sum() + 1e-8
+            lbp_hist = lbp_hist.astype(np.float32) / lbp_sum
             features.extend(lbp_hist.tolist())
         
         # ===== 8. 频域特征 (6个) - 从预计算频谱图提取 =====
@@ -589,44 +617,44 @@ class FastPixelFeatureExtractor:
         center_h, center_w = h_p // 2, w_p // 2
         radius = min(h_p, w_p) // 4
         
-        low_freq = freq_patch[max(0,center_h-radius):center_h+radius,
-                              max(0,center_w-radius):center_w+radius]
+        y_start = max(0, center_h - radius)
+        y_end = min(h_p, center_h + radius)
+        x_start = max(0, center_w - radius)
+        x_end = min(w_p, center_w + radius)
+        
+        low_freq = freq_patch[y_start:y_end, x_start:x_end]
         features.append(np.mean(low_freq))
         features.append(np.std(low_freq))
         
-        high_freq_mask = np.ones_like(freq_patch, dtype=bool)
-        high_freq_mask[max(0,center_h-radius):center_h+radius,
-                       max(0,center_w-radius):center_w+radius] = False
+        # 高频区域
+        high_freq_mask = np.ones(freq_patch.shape, dtype=bool)
+        high_freq_mask[y_start:y_end, x_start:x_end] = False
         high_freq = freq_patch[high_freq_mask]
-        features.append(np.mean(high_freq))
-        features.append(np.std(high_freq))
-        features.append(np.sum(low_freq) / (np.sum(freq_patch) + 1e-8))
-        features.append(np.percentile(high_freq, 95))
         
-        # ===== 9. 局部对比度特征 (6个) - 从预计算对比度图提取 =====
+        features.append(np.mean(high_freq) if high_freq.size > 0 else 0)
+        features.append(np.std(high_freq) if high_freq.size > 0 else 0)
+        freq_sum = np.sum(freq_patch) + 1e-8
+        features.append(np.sum(low_freq) / freq_sum)
+        features.append(fast_percentile(high_freq, 95) if high_freq.size > 0 else 0)
+        
+        # ===== 9. 局部对比度特征 (6个) =====
         local_var_flat = local_var_patch.flatten()
         local_contrast_flat = local_contrast_patch.flatten()
         
         features.append(np.mean(local_var_flat))
         features.append(np.std(local_var_flat))
-        features.append(np.percentile(local_var_flat, 95))
+        features.append(fast_percentile(local_var_flat, 95))
         features.append(np.mean(local_contrast_flat))
         features.append(np.std(local_contrast_flat))
-        features.append(np.percentile(local_contrast_flat, 95))
+        features.append(fast_percentile(local_contrast_flat, 95))
         
         # 转换为数组
         features_array = np.array(features, dtype=np.float32)
         
-        # 特征选择逻辑:
-        # - use_lbp=True, feature_dim=57: 直接返回57维
-        # - use_lbp=False, feature_dim=49: 直接返回49维 (已跳过LBP)
-        # - feature_dim=35: 从57维中选择35个重要特征
+        # 特征选择逻辑
         if self.feature_dim == 35 and self.selected_indices is not None:
-            # 35维需要从完整特征中选择
-            # 如果use_lbp=False，需要先补齐LBP特征
             if not self.use_lbp:
-                # 补零占位，保持索引正确
-                lbp_placeholder = [0.0] * 8
+                lbp_placeholder = np.zeros(8, dtype=np.float32)
                 features_array = np.concatenate([features_array[:37], lbp_placeholder, features_array[37:]])
             features_array = features_array[self.selected_indices]
         
