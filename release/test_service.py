@@ -27,7 +27,8 @@
     3. 多算法对比测试
     4. 生成完整测试报告 (效果 + 性能 + 资源消耗)
     5. 生成发版规格数据
-    6. 保存推理结果图片 (左侧原图，右侧篡改标注)
+    6. 保存推理结果图片 (左侧原图，右侧篡改标注，含检测框)
+    7. 检测框准确率统计 (IoU>0.5记为正确)
 
 数据集结构:
     |-- test
@@ -37,12 +38,18 @@
 输出结果:
     |-- test_results
     |   |-- images/              # 结果图片
-    |   |   |-- xxx_ml_result.jpg      # ML 结果 (左原图，右标注)
+    |   |   |-- xxx_ml_result.jpg      # ML 结果 (左原图，右标注+检测框)
     |   |   |-- xxx_ela_result.jpg     # ELA 结果
     |   |   |-- xxx_dct_result.jpg     # DCT 结果
     |   |   `-- xxx_fusion_result.jpg  # Fusion 结果
-    |   |-- test_report_*.json   # 测试报告
+    |   |-- test_report_*.json   # 测试报告 (含检测框准确率)
     |   `-- compare_report_*.json # 对比报告
+
+检测框准确率:
+    - 从真实mask提取检测框
+    - 从预测结果tamper_regions提取检测框
+    - 计算IoU，>0.5记为正确匹配
+    - 支持多检测框匹配 (最佳匹配策略)
 """
 
 import os
@@ -374,6 +381,161 @@ class TamperDetectionTester:
         except:
             return None
     
+    def extract_bboxes_from_mask(self, mask: np.ndarray, min_area: int = 100) -> List[Tuple[int, int, int, int]]:
+        """
+        从 mask 中提取检测框
+        
+        Args:
+            mask: 二值掩码 (0=正常, >127=篡改)
+            min_area: 最小区域面积阈值
+        
+        Returns:
+            [(x1, y1, x2, y2), ...] 检测框列表 (左上角+右下角坐标)
+        """
+        if mask is None:
+            return []
+        
+        # 确保是灰度图
+        if len(mask.shape) == 3:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        
+        # 二值化
+        _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+        
+        # 查找轮廓
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        bboxes = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area >= min_area:
+                x, y, w, h = cv2.boundingRect(contour)
+                bboxes.append((x, y, x + w, y + h))
+        
+        return bboxes
+    
+    def compute_bbox_iou(self, bbox1: Tuple[int, int, int, int], 
+                         bbox2: Tuple[int, int, int, int]) -> float:
+        """
+        计算两个检测框的 IoU
+        
+        Args:
+            bbox1: (x1, y1, x2, y2) 检测框1
+            bbox2: (x1, y1, x2, y2) 检测框2
+        
+        Returns:
+            IoU 值 (0-1)
+        """
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+        
+        # 计算交集
+        inter_x1 = max(x1_1, x1_2)
+        inter_y1 = max(y1_1, y1_2)
+        inter_x2 = min(x2_1, x2_2)
+        inter_y2 = min(y2_1, y2_2)
+        
+        if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+            return 0.0
+        
+        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+        
+        # 计算并集
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union_area = area1 + area2 - inter_area
+        
+        return inter_area / union_area if union_area > 0 else 0.0
+    
+    def compute_bbox_accuracy(self, true_bboxes: List[Tuple[int, int, int, int]], 
+                              pred_bboxes: List[Tuple[int, int, int, int]],
+                              iou_threshold: float = 0.5) -> Dict:
+        """
+        计算检测框准确率
+        
+        使用最佳匹配策略:
+        1. 对于每个真实框，找预测框中 IoU 最大的
+        2. 如果 IoU > threshold，记为正确匹配
+        3. 计算 Precision, Recall, F1
+        
+        Args:
+            true_bboxes: 真实检测框列表
+            pred_bboxes: 预测检测框列表
+            iou_threshold: IoU 阈值
+        
+        Returns:
+            {
+                'precision': float,  # 预测框中正确匹配的比例
+                'recall': float,     # 真实框中被正确匹配的比例
+                'f1': float,         # F1 score
+                'true_count': int,   # 真实框数量
+                'pred_count': int,   # 预测框数量
+                'matched_true': int, # 匹配成功的真实框数
+                'matched_pred': int, # 匹配成功的预测框数
+                'avg_iou': float     # 匹配成功的平均 IoU
+            }
+        """
+        if len(true_bboxes) == 0 and len(pred_bboxes) == 0:
+            return {
+                'precision': 1.0, 'recall': 1.0, 'f1': 1.0,
+                'true_count': 0, 'pred_count': 0,
+                'matched_true': 0, 'matched_pred': 0,
+                'avg_iou': 0.0
+            }
+        
+        if len(true_bboxes) == 0:
+            return {
+                'precision': 0.0, 'recall': 1.0, 'f1': 0.0,
+                'true_count': 0, 'pred_count': len(pred_bboxes),
+                'matched_true': 0, 'matched_pred': 0,
+                'avg_iou': 0.0
+            }
+        
+        if len(pred_bboxes) == 0:
+            return {
+                'precision': 1.0, 'recall': 0.0, 'f1': 0.0,
+                'true_count': len(true_bboxes), 'pred_count': 0,
+                'matched_true': 0, 'matched_pred': 0,
+                'avg_iou': 0.0
+            }
+        
+        # 计算所有 IoU
+        iou_matrix = np.zeros((len(true_bboxes), len(pred_bboxes)))
+        for i, true_box in enumerate(true_bboxes):
+            for j, pred_box in enumerate(pred_bboxes):
+                iou_matrix[i, j] = self.compute_bbox_iou(true_box, pred_box)
+        
+        # 最佳匹配策略
+        matched_true = set()
+        matched_pred = set()
+        matched_ious = []
+        
+        # 按行匹配 (真实框 → 预测框)
+        for i in range(len(true_bboxes)):
+            best_j = np.argmax(iou_matrix[i])
+            best_iou = iou_matrix[i, best_j]
+            if best_iou >= iou_threshold:
+                matched_true.add(i)
+                matched_pred.add(best_j)
+                matched_ious.append(best_iou)
+        
+        # 计算指标
+        precision = len(matched_pred) / len(pred_bboxes) if len(pred_bboxes) > 0 else 0
+        recall = len(matched_true) / len(true_bboxes) if len(true_bboxes) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        avg_iou = np.mean(matched_ious) if matched_ious else 0.0
+        
+        return {
+            'precision': round(precision, 4),
+            'recall': round(recall, 4),
+            'f1': round(f1, 4),
+            'true_count': len(true_bboxes),
+            'pred_count': len(pred_bboxes),
+            'matched_true': len(matched_true),
+            'matched_pred': len(matched_pred),
+            'avg_iou': round(avg_iou, 4)
+        }
+    
     def compute_pixel_metrics(self, pred_mask: np.ndarray, true_mask: np.ndarray, 
                               threshold: int = 127) -> Dict:
         """计算像素级指标"""
@@ -512,9 +674,12 @@ class TamperDetectionTester:
     def _save_result_image(self, image_path: str, result: Dict, output_path: str,
                            true_label: int = None, mask_path: str = None):
         """
-        保存检测结果图片 (左侧原图，右侧篡改标注)
+        保存检测结果图片 (左侧原图，右侧篡改标注，含检测框)
         
-        只保存一张图片，左侧显示原图，右侧显示篡改区域标注
+        改进点:
+        1. 优先使用服务返回的 marked_image_base64 (已包含检测框)
+        2. 如果没有 marked_image_base64，从 mask_base64 绘制检测框
+        3. 支持从 tamper_regions 绘制检测框
         """
         try:
             image = cv2.imread(image_path)
@@ -527,14 +692,41 @@ class TamperDetectionTester:
             # 右侧图片 (篡改标注)
             right_image = image.copy()
             
-            # 优先使用服务返回的 marked_image_base64
+            # 绘制检测框的函数
+            def draw_detection_boxes(img, bboxes, color=(0, 255, 0)):
+                """绘制检测框列表"""
+                for bbox in bboxes:
+                    if isinstance(bbox, dict):
+                        # TamperRegion 格式: {left_top: [x,y], right_bottom: [x,y]}
+                        x1, y1 = bbox.get('left_top', [0, 0])
+                        x2, y2 = bbox.get('right_bottom', [0, 0])
+                    elif isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+                        # (x1, y1, x2, y2) 格式
+                        x1, y1, x2, y2 = bbox
+                    else:
+                        continue
+                    cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+            
+            # 策略1: 使用服务返回的 marked_image_base64
             marked_image_base64 = result.get('marked_image_base64')
             if marked_image_base64:
                 marked_image = self.decode_mask_base64(marked_image_base64)
                 if marked_image is not None:
+                    # 服务端已经绘制了检测框，直接使用
                     right_image = marked_image
+                else:
+                    # 解码失败，手动绘制
+                    tamper_regions = result.get('tamper_regions')
+                    if tamper_regions:
+                        draw_detection_boxes(right_image, tamper_regions, (0, 255, 0))
+                    # 同时绘制真实检测框 (红色)
+                    if mask_path and os.path.exists(mask_path):
+                        true_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                        if true_mask is not None:
+                            true_bboxes = self.extract_bboxes_from_mask(true_mask)
+                            draw_detection_boxes(right_image, true_bboxes, (0, 0, 255))
             else:
-                # 使用 mask_base64 绘制标注
+                # 策略2: 使用 mask_base64 绘制轮廓和检测框
                 mask_base64 = result.get('mask_base64')
                 if mask_base64:
                     mask = self.decode_mask_base64(mask_base64)
@@ -543,14 +735,37 @@ class TamperDetectionTester:
                         if len(mask.shape) == 3:
                             mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
                         
-                        # 绘制轮廓和矩形
+                        # 绘制轮廓 (红色)
                         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         cv2.drawContours(right_image, contours, -1, (0, 0, 255), 2)
+                        
+                        # 绘制检测框 (绿色)
                         for contour in contours:
                             area = cv2.contourArea(contour)
                             if area >= 100:
                                 x, y, cw, ch = cv2.boundingRect(contour)
                                 cv2.rectangle(right_image, (x, y), (x + cw, y + ch), (0, 255, 0), 2)
+                
+                # 策略3: 使用 tamper_regions 绘制检测框
+                tamper_regions = result.get('tamper_regions')
+                if tamper_regions and not mask_base64:
+                    draw_detection_boxes(right_image, tamper_regions, (0, 255, 0))
+                
+                # 绘制真实检测框 (蓝色虚线)
+                if mask_path and os.path.exists(mask_path):
+                    true_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                    if true_mask is not None:
+                        true_bboxes = self.extract_bboxes_from_mask(true_mask)
+                        for bbox in true_bboxes:
+                            x1, y1, x2, y2 = bbox
+                            # 蓝色虚线框 (用多个小线段模拟)
+                            dash_len = 10
+                            for i in range(x1, x2, dash_len * 2):
+                                cv2.line(right_image, (i, y1), (min(i + dash_len, x2), y1), (255, 0, 0), 2)
+                                cv2.line(right_image, (i, y2), (min(i + dash_len, x2), y2), (255, 0, 0), 2)
+                            for i in range(y1, y2, dash_len * 2):
+                                cv2.line(right_image, (x1, i), (x1, min(i + dash_len, y2)), (255, 0, 0), 2)
+                                cv2.line(right_image, (x2, i), (x2, min(i + dash_len, y2)), (255, 0, 0), 2)
             
             # 添加文字标注到右侧图片
             self._add_text_annotations(right_image, result, true_label, h, w)
@@ -606,7 +821,7 @@ class TamperDetectionTester:
         处理单张图片 (用于并发)
         
         Returns:
-            Dict: 处理结果
+            Dict: 处理结果 (含检测框准确率)
         """
         image_path = os.path.join(images_dir, image_file)
         
@@ -646,6 +861,27 @@ class TamperDetectionTester:
                     if pred_mask is not None:
                         pixel_metrics = self.compute_pixel_metrics(pred_mask, true_mask)
             
+            # 检测框准确率 (新增)
+            bbox_metrics = None
+            if os.path.exists(mask_path):
+                # 从真实 mask 提取检测框
+                true_mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                if true_mask is not None:
+                    true_bboxes = self.extract_bboxes_from_mask(true_mask)
+                    
+                    # 从预测结果提取检测框
+                    pred_bboxes = []
+                    tamper_regions = result.get('tamper_regions')
+                    if tamper_regions:
+                        for region in tamper_regions:
+                            if isinstance(region, dict):
+                                x1, y1 = region.get('left_top', [0, 0])
+                                x2, y2 = region.get('right_bottom', [0, 0])
+                                pred_bboxes.append((int(x1), int(y1), int(x2), int(y2)))
+                    
+                    # 计算检测框准确率
+                    bbox_metrics = self.compute_bbox_accuracy(true_bboxes, pred_bboxes)
+            
             # 保存结果图片
             if save_images:
                 output_name = f"{os.path.splitext(image_file)[0]}_{algorithm}_result.jpg"
@@ -659,6 +895,7 @@ class TamperDetectionTester:
                 'confidence': confidence,
                 'processing_time': processing_time,
                 'pixel_metrics': pixel_metrics,
+                'bbox_metrics': bbox_metrics,  # 新增
                 'status': 'success'
             }
         else:
@@ -732,6 +969,12 @@ class TamperDetectionTester:
         pixel_metrics_list = []
         total_pixel_tp = total_pixel_tn = total_pixel_fp = total_pixel_fn = 0
         
+        # 检测框准确率统计 (新增)
+        bbox_metrics_list = []
+        total_bbox_true = total_bbox_pred = 0
+        total_bbox_matched_true = total_bbox_matched_pred = 0
+        bbox_iou_list = []
+        
         tampered_confidences = []
         normal_confidences = []
         
@@ -794,6 +1037,16 @@ class TamperDetectionTester:
                         total_pixel_tn += pm['tn']
                         total_pixel_fp += pm['fp']
                         total_pixel_fn += pm['fn']
+                    
+                    # 检测框准确率 (新增)
+                    if result.get('bbox_metrics'):
+                        bbox_metrics_list.append(result['bbox_metrics'])
+                        total_bbox_true += result['bbox_metrics']['true_count']
+                        total_bbox_pred += result['bbox_metrics']['pred_count']
+                        total_bbox_matched_true += result['bbox_metrics']['matched_true']
+                        total_bbox_matched_pred += result['bbox_metrics']['matched_pred']
+                        if result['bbox_metrics']['avg_iou'] > 0:
+                            bbox_iou_list.append(result['bbox_metrics']['avg_iou'])
                 else:
                     fn += 1 if true_label == 1 else 0
                     fp += 1 if true_label == 0 else 0
@@ -858,6 +1111,35 @@ class TamperDetectionTester:
                 'total_fn': total_pixel_fn,
             }
         
+        # 检测框准确率汇总 (新增)
+        bbox_summary = None
+        if bbox_metrics_list:
+            avg_bbox_prec = np.mean([m['precision'] for m in bbox_metrics_list])
+            avg_bbox_rec = np.mean([m['recall'] for m in bbox_metrics_list])
+            avg_bbox_f1 = np.mean([m['f1'] for m in bbox_metrics_list])
+            avg_bbox_iou = np.mean(bbox_iou_list) if bbox_iou_list else 0
+            
+            # 整体检测框指标
+            overall_bbox_prec = total_bbox_matched_pred / total_bbox_pred if total_bbox_pred > 0 else 0
+            overall_bbox_rec = total_bbox_matched_true / total_bbox_true if total_bbox_true > 0 else 0
+            overall_bbox_f1 = 2 * overall_bbox_prec * overall_bbox_rec / (overall_bbox_prec + overall_bbox_rec) \
+                if (overall_bbox_prec + overall_bbox_rec) > 0 else 0
+            
+            bbox_summary = {
+                'evaluated_images': len(bbox_metrics_list),
+                'avg_precision': round(avg_bbox_prec, 4),
+                'avg_recall': round(avg_bbox_rec, 4),
+                'avg_f1': round(avg_bbox_f1, 4),
+                'avg_iou': round(avg_bbox_iou, 4),
+                'overall_precision': round(overall_bbox_prec, 4),
+                'overall_recall': round(overall_bbox_rec, 4),
+                'overall_f1': round(overall_bbox_f1, 4),
+                'total_true_bboxes': total_bbox_true,
+                'total_pred_bboxes': total_bbox_pred,
+                'total_matched_true': total_bbox_matched_true,
+                'total_matched_pred': total_bbox_matched_pred,
+            }
+        
         # 构建报告
         report = {
             'test_info': {
@@ -892,6 +1174,7 @@ class TamperDetectionTester:
                 'tp': tp, 'tn': tn, 'fp': fp, 'fn': fn,
             },
             'pixel_metrics': pixel_summary,
+            'bbox_metrics': bbox_summary,  # 新增
             'confidence_stats': {
                 'avg_tampered_confidence': round(avg_tampered_conf, 4),
                 'avg_normal_confidence': round(avg_normal_conf, 4),
@@ -948,6 +1231,17 @@ class TamperDetectionTester:
             print(f"  Pixel-F1: {pixel['avg_pixel_f1']:.4f}")
             print(f"  Pixel-Precision: {pixel['avg_pixel_precision']:.4f}")
             print(f"  Pixel-Recall: {pixel['avg_pixel_recall']:.4f}")
+        
+        # 检测框准确率 (新增)
+        bbox = report.get('bbox_metrics')
+        if bbox:
+            print(f"\n【检测框准确率】(评估{bbox['evaluated_images']}张)")
+            print(f"  Precision: {bbox['avg_precision']:.4f} (Overall: {bbox['overall_precision']:.4f})")
+            print(f"  Recall:    {bbox['avg_recall']:.4f} (Overall: {bbox['overall_recall']:.4f})")
+            print(f"  F1:        {bbox['avg_f1']:.4f} (Overall: {bbox['overall_f1']:.4f})")
+            print(f"  Avg IoU:   {bbox['avg_iou']:.4f}")
+            print(f"  真实框: {bbox['total_true_bboxes']} | 预测框: {bbox['total_pred_bboxes']}")
+            print(f"  匹配成功: 真实={bbox['total_matched_true']} | 预测={bbox['total_matched_pred']}")
         
         perf = report['performance']
         print(f"\n【性能指标】")
@@ -1013,6 +1307,19 @@ class TamperDetectionTester:
                     print(f"{algo:<10} {pixel['avg_iou']:<8.4f} {pixel['avg_dice']:<8.4f} "
                           f"{pixel['avg_pixel_f1']:<8.4f} {pixel['avg_pixel_precision']:<8.4f} "
                           f"{pixel['avg_pixel_recall']:<8.4f}")
+        
+        # 检测框准确率对比 (新增)
+        has_bbox = any(r.get('bbox_metrics') for r in reports.values() if r)
+        if has_bbox:
+            print(f"\n【检测框准确率对比】")
+            print(f"{'算法':<10} {'B-Prec':<8} {'B-Rec':<8} {'B-F1':<8} {'B-IoU':<8} {'B-Overall':<8}")
+            print("-" * 60)
+            
+            for algo, report in reports.items():
+                if report and report.get('bbox_metrics'):
+                    bbox = report['bbox_metrics']
+                    print(f"{algo:<10} {bbox['avg_precision']:<8.4f} {bbox['avg_recall']:<8.4f} "
+                          f"{bbox['avg_f1']:<8.4f} {bbox['avg_iou']:<8.4f} {bbox['overall_f1']:<8.4f}")
         
         # 保存对比报告
         compare_path = os.path.join(self.output_dir, 
