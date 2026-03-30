@@ -499,87 +499,125 @@ python train/gb_classifier/train_gb.py \
 
 ### 训练像素级模型
 
-**最终版训练脚本** (49维特征 + GPU加速):
+提供两个训练脚本：
+
+#### 1. `train_pixel.py` - 基础版
+
+适用于一般场景，功能完整：
 
 ```bash
-# 安装依赖
-pip install scikit-image xgboost
-
 # GPU 加速训练 (推荐)
 python train/pixel_segmentation/train_pixel.py \
-    --data_dir /path/to/processed_data \
+    --data_dir /path/to/data \
     --model_type xgb \
     --preset balanced \
     --num_workers 16
 
-# 保存数据集缓存 (避免重复构建)
+# 保存数据集缓存
 python train/pixel_segmentation/train_pixel.py \
-    --data_dir /path/to/processed_data \
+    --data_dir /path/to/data \
     --cache_dataset ./cache/dataset.npz
 
 # 从缓存加载
 python train/pixel_segmentation/train_pixel.py \
-    --data_dir /path/to/processed_data \
+    --data_dir /path/to/data \
     --load_cache ./cache/dataset.npz
+```
+
+#### 2. `train_pixel_bbox.py` - 检测框优化版 ⭐推荐
+
+针对**检测框准确率**优化，新增：
+- **边界加权采样**: 篡改区域边界样本权重更高
+- **连通域分析**: 训练时监控检测框数量匹配度
+- **后处理参数优化**: 自动搜索最佳阈值
+
+```bash
+# 检测框优化训练 (推荐)
+python train/pixel_segmentation/train_pixel_bbox.py \
+    --data_dir /path/to/data \
+    --preset bbox_optimized \
+    --num_workers 16
 
 # 高召回配置 (优先召回率)
-python train/pixel_segmentation/train_pixel.py \
-    --data_dir /path/to/processed_data \
+python train/pixel_segmentation/train_pixel_bbox.py \
+    --data_dir /path/to/data \
     --preset high_recall
 ```
 
-**训练参数**:
+#### 训练参数说明
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--data_dir` | 数据目录 | 必填 |
+| `--data_dir` | 数据目录 (必需) | - |
 | `--output_dir` | 模型输出目录 | `./release/models/pixel_segmentation` |
-| `--preset` | 预设配置 | `balanced` |
+| `--preset` | 预设配置 | `balanced` / `bbox_optimized` |
 | `--model_type` | 模型类型 | `xgb` |
-| `--window_size` | 窗口大小 | 32 |
+| `--window_size` | 滑动窗口大小 | 32 |
 | `--stride` | 滑动步长 | 16 |
-| `--num_workers` | 进程数 | 8 |
+| `--num_workers` | 并行进程数 | 8 |
+| `--skip_solid` | 跳过纯色块 | True |
 | `--cache_dataset` | 保存缓存路径 | - |
 | `--load_cache` | 加载缓存路径 | - |
 
-**模型类型对比**:
+#### 预设配置对比
+
+| 参数 | default | balanced | bbox_optimized ⭐ | high_recall |
+|------|---------|----------|-------------------|-------------|
+| 篡改过采样 | 3x | 5x | **6x** | 8x |
+| 类别权重 | 10 | 20 | **25** | 30 |
+| **边界权重** | 2.0 | 3.0 | **4.0** | 3.0 |
+| **最小面积** | 100 | 100 | **150** | 80 |
+| 树数量 | 300 | 500 | **600** | 600 |
+| 适用场景 | 基础 | 平衡 | **检测框优化** | 高召回 |
+
+#### 模型类型对比
 
 | 模型 | 训练 | 推理 | GPU 支持 | 推荐 |
 |------|------|------|----------|------|
 | **xgb** | GPU | GPU | ✅ 原生支持 | ⭐⭐⭐⭐⭐ |
 | lgb | CPU | CPU | ❌ | ⭐⭐⭐ |
 | rf | CPU | CPU | ❌ | ⭐⭐ |
-| ensemble | 混合 | 混合 | 部分 | ⭐⭐⭐ |
 
-**预设配置对比**:
+#### 检测框优化原理
 
-| 参数 | default | balanced (推荐) | high_recall | aggressive |
-|------|---------|-----------------|-------------|------------|
-| MAX_SAMPLES | 3000 | **5000** | **6000** | **8000** |
-| 篡改过采样 | 3x | **5x** | **8x** | **10x** |
-| 正常欠采样 | 2x | **1.5x** | **1.2x** | **1x** |
-| 类别权重 | 10 | **20** | **30** | **50** |
-| 树数量 | 300 | **500** | **600** | **800** |
+```
+原方案:
+像素分类 → 阈值 → 连通域 → 检测框
+         ↑ 问题：边界模糊
 
-**特征维度**: 49维 (移除无效LBP特征)
+优化方案:
+像素分类 + 边界加权 → 阈值优化 → 连通域过滤 → 检测框
+    ↑ 边界样本权重更高    ↑ 搜索最佳参数  ↑ 去噪
+```
 
-**训练输出示例**:
+**关键参数**:
+- `BORDER_WEIGHT`: 边界样本权重，越大边界越清晰
+- `MIN_AREA_THRESHOLD`: 最小连通域面积，过滤噪点
+- `MORPH_KERNEL_SIZE`: 形态学核大小，平滑边界
+
+#### 训练输出示例
 
 ```
 处理 train 集: 10000 张图片 (16 进程)
-  [████████████████████] 10000/10000 (100%) | 速度: 125.3 张/s | 已用: 1.3min
+  [████████████████████] 10000/10000 | 速度: 125.3 张/s
 
 数据集统计:
-  处理时间: 800.5 秒
-  正常图片: 283 张
-  篡改图片: 9717 张
+  处理时间: 800.5s
   总样本数: 25,231,892
-  特征维度: 49
+  篡改像素: 2,523,189 (10.0%)
+  边界样本: 504,638 (2.0%)
 
-连通域分析 (检测框相关):
-  真实连通域数: 8423
-  预测连通域数: 8102
-  预测平均大小: 1256.3
+连通域分析:
+  真实: 8423 个
+  预测: 8102 个
+  平均大小: 1256
+  噪点数: 23
+
+训练完成:
+  F1: 0.8523
+  Precision: 0.8712
+  Recall: 0.8342
+  阈值: 0.42
 ```
 
 ---
@@ -610,6 +648,21 @@ python train/pixel_segmentation/train_pixel.py \
 ---
 
 ## 更新日志
+
+### 2026-03-30 v5 ⭐检测框优化训练
+
+- ✅ **新增检测框优化训练脚本**
+  - `train_pixel_bbox.py` 专门针对检测框准确率优化
+  - 边界加权采样: 篡改区域边界样本权重更高
+  - 连通域分析: 训练时监控检测框数量匹配度
+  - 后处理参数优化: 自动搜索最佳阈值
+- ✅ **新增预设配置**
+  - `bbox_optimized`: 检测框优化 (推荐)
+  - `high_recall`: 高召回场景
+- ✅ **详细文档更新**
+  - 检测框优化原理说明
+  - 关键参数解释
+  - 使用示例
 
 ### 2026-03-30 v4 ⭐训练脚本合并
 
