@@ -938,3 +938,158 @@ class PixelFeatureExtractor:
 
 # 兼容别名
 EnhancedFeatureExtractor = PixelFeatureExtractor
+
+
+# ============== 与训练一致的特征提取器 ==============
+# 重要: 此类必须与 train/pixel_segmentation/train_pixel_bbox.py 中的 FeatureExtractor49D 保持一致
+
+class FeatureExtractor49DCompatible:
+    """
+    49维特征提取器 - 与训练脚本完全一致
+    
+    用于推理时，确保特征值与训练时一致。
+    注意: 此类不使用预计算优化，速度较慢但结果准确。
+    """
+    
+    def __init__(self, window_size: int = 32):
+        self.window_size = window_size
+        self.half = window_size // 2
+    
+    def extract(self, patch: np.ndarray) -> np.ndarray:
+        """
+        提取49维特征
+        
+        特征顺序 (必须与训练一致):
+        1. DCT特征 (8维)
+        2. ELA特征 (4维)
+        3. Noise特征 (6维)
+        4. Edge特征 (6维)
+        5. 纹理特征 (8维)
+        6. Color特征 (5维)
+        7. 频域特征 (6维)
+        8. 局部对比度特征 (6维)
+        
+        总计: 49维
+        """
+        features = []
+        
+        if len(patch.shape) == 3:
+            gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = patch
+        gray = gray.astype(np.float32)
+        
+        # 1. DCT特征 (8维) - 对整个窗口做DCT
+        dct = cv2.dct(gray)
+        dct_low = dct[:8, :8]
+        dct_high = dct[8:, 8:]
+        dct_low_abs = np.abs(dct_low)
+        dct_high_abs = np.abs(dct_high)
+        dct_abs = np.abs(dct)
+        
+        features.append(np.mean(dct_low_abs))
+        features.append(np.std(dct_low_abs))
+        features.append(np.mean(dct_high_abs))
+        features.append(np.std(dct_high_abs))
+        features.append(np.percentile(dct_low_abs, 95))
+        features.append(np.percentile(dct_high_abs, 95))
+        features.append(np.max(dct_low_abs))
+        features.append(np.sum(dct_high_abs) / (np.sum(dct_abs) + 1e-8))
+        
+        # 2. ELA特征 (4维) - 对每个patch单独编码
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+        _, encoded = cv2.imencode('.jpg', patch, encode_param)
+        decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        ela = np.abs(patch.astype(np.float32) - decoded.astype(np.float32))
+        ela_flat = ela.flatten()
+        
+        features.append(np.mean(ela_flat))
+        features.append(np.std(ela_flat))
+        features.append(np.percentile(ela_flat, 95))
+        features.append(np.max(ela_flat))
+        
+        # 3. Noise特征 (6维)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        noise = gray - blurred
+        noise_abs = np.abs(noise)
+        noise_flat = noise_abs.flatten()
+        
+        features.append(np.mean(noise_abs))
+        features.append(np.std(noise))
+        features.append(np.percentile(noise_flat, 95))
+        features.append(np.max(noise_abs))
+        features.append(np.percentile(noise_flat, 99))
+        features.append(np.median(noise_abs))
+        
+        # 4. Edge特征 (6维)
+        edges = cv2.Canny(gray.astype(np.uint8), 50, 150)
+        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        mag = np.sqrt(sobel_x**2 + sobel_y**2)
+        
+        features.append(np.mean(edges > 0))
+        features.append(np.mean(mag))
+        features.append(np.std(mag))
+        features.append(np.max(mag))
+        features.append(np.percentile(mag, 95))
+        features.append(np.sum(mag > np.percentile(mag, 90)) / mag.size)
+        
+        # 5. 纹理特征 (8维)
+        diff_h = np.abs(gray[:, 1:] - gray[:, :-1])
+        diff_v = np.abs(gray[1:, :] - gray[:-1, :])
+        
+        features.append(np.mean(diff_h))
+        features.append(np.std(diff_h))
+        features.append(np.mean(diff_v))
+        features.append(np.std(diff_v))
+        features.append(np.percentile(diff_h, 95))
+        features.append(np.percentile(diff_v, 95))
+        features.append(np.percentile(np.abs(gray[1:, 1:] - gray[:-1, :-1]), 95))
+        features.append(np.std(gray))
+        
+        # 6. Color特征 (5维)
+        if len(patch.shape) == 3:
+            hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+            features.append(np.std(hsv[:,:,0]))
+            features.append(np.std(hsv[:,:,1]))
+            features.append(np.std(hsv[:,:,2]))
+            features.append(np.std(patch[:,:,0]))
+            features.append(np.std(patch[:,:,1]))
+        else:
+            features.extend([0] * 5)
+        
+        # 7. 频域特征 (6维)
+        f = np.fft.fft2(gray)
+        fshift = np.fft.fftshift(f)
+        magnitude = np.abs(fshift)
+        
+        h, w = magnitude.shape
+        center_h, center_w = h // 2, w // 2
+        radius = min(h, w) // 4
+        
+        low_freq = magnitude[center_h-radius:center_h+radius, center_w-radius:center_w+radius]
+        features.append(np.mean(low_freq))
+        features.append(np.std(low_freq))
+        
+        high_freq_mask = np.ones_like(magnitude, dtype=bool)
+        high_freq_mask[center_h-radius:center_h+radius, center_w-radius:center_w+radius] = False
+        high_freq = magnitude[high_freq_mask]
+        features.append(np.mean(high_freq))
+        features.append(np.std(high_freq))
+        features.append(np.sum(low_freq) / (np.sum(magnitude) + 1e-8))
+        features.append(np.percentile(high_freq, 95))
+        
+        # 8. 局部对比度特征 (6维)
+        local_mean = cv2.blur(gray, (8, 8))
+        local_var = cv2.blur((gray - local_mean)**2, (8, 8))
+        
+        features.append(np.mean(local_var))
+        features.append(np.std(local_var))
+        features.append(np.percentile(local_var, 95))
+        
+        local_contrast = np.sqrt(local_var)
+        features.append(np.mean(local_contrast))
+        features.append(np.std(local_contrast))
+        features.append(np.percentile(local_contrast, 95))
+        
+        return np.array(features, dtype=np.float32)
