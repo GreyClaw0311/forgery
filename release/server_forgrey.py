@@ -177,7 +177,7 @@ app = FastAPI(
 detectors = {}
 gb_model = None
 gb_scaler = None
-gb_threshold = 0.5
+gb_threshold = 0.85  # 提高阈值以降低误报率 (训练数据篡改:正常=14.5:1)
 
 
 def load_gb_classifier():
@@ -210,8 +210,10 @@ def load_gb_classifier():
             import json
             with open(config_path, 'r') as f:
                 config = json.load(f)
-                gb_threshold = config.get('optimal_threshold', 0.5)
-                logger.info(f"GB 最优阈值: {gb_threshold}")
+                threshold_from_config = config.get('optimal_threshold', 0.85)
+                # 训练数据严重不平衡(篡改:正常=14.5:1)，强制使用高阈值
+                gb_threshold = max(threshold_from_config, 0.85)
+                logger.info(f"GB 最优阈值: {gb_threshold} (config={threshold_from_config})")
         
         return True
     except Exception as e:
