@@ -370,7 +370,7 @@ class MLDetector:
         binary_mask = (heatmap > threshold).astype(np.uint8) * 255
         
         print(f"Mask 生成: heatmap范围=[{heatmap.min():.4f}, {heatmap.max():.4f}], "
-              f"均值={heatmap_mean:.4f}")
+              f"均值={heatmap.mean():.4f}")
         print(f"  阈值: {threshold:.4f}")
         print(f"  非零像素: {np.sum(binary_mask > 0)}")
         
