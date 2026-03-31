@@ -107,12 +107,7 @@ class MLDetector:
                     data = pickle.load(f)
                 self.pixel_model = data.get('model')
                 self.pixel_scaler = data.get('scaler')
-                
-                # 注意: 不再使用保存的阈值，因为训练时的阈值通常不适合推理
-                # 训练时可能用 0.5-0.9，但模型输出概率范围可能完全不同
-                # 使用动态阈值策略 (在 _generate_mask 中处理)
-                saved_threshold = data.get('threshold', 0.5)
-                self.pixel_threshold = None  # None 表示使用动态阈值
+                self.pixel_threshold = data.get('threshold', 0.5)
                 
                 # 从模型配置中读取特征维度
                 model_config = data.get('config', {})
@@ -139,7 +134,7 @@ class MLDetector:
                     print(f"像素级模型已加载: {model_path}")
                     print(f"  特征维度: {self.pixel_feature_dim}")
                     print(f"  使用LBP: {self.use_lbp}")
-                    print(f"  保存的阈值: {saved_threshold} (已忽略，使用动态阈值)")
+                    print(f"  像素级阈值: {self.pixel_threshold}")
                     print(f"  最小连通域面积: {self.min_area_threshold}")
                     print(f"  形态学核大小: {self.morph_kernel_size}")
                     
@@ -237,33 +232,25 @@ class MLDetector:
         if not result['is_tampered']:
             return result
         
-        # 2. 像素级检测 (使用全局预计算优化)
+        # 2. 像素级检测
         if self.pixel_model is None:
             return result
         
         try:
             preprocess_start = time.time()
             
-            # 使用优化版特征提取
-            from algorithms.features import GlobalFeatureCache, FastPixelFeatureExtractor
+            # ========== 使用与训练一致的特征提取器 ==========
+            # 重要: 训练时使用的是 FeatureExtractor49D，对每个窗口单独计算特征
+            # 推理时必须使用相同的特征提取方式，否则特征值不一致导致模型输出异常
             
-            # 全局特征预计算
-            cache_start = time.time()
-            cache = GlobalFeatureCache(image, quality=90, use_lbp=self.use_lbp)
-            cache_time = time.time() - cache_start
+            from algorithms.features import FeatureExtractor49DCompatible
             
-            # 创建快速提取器 (根据模型配置决定是否使用LBP)
-            extractor = FastPixelFeatureExtractor(
-                window_size=32,
-                feature_dim=self.pixel_feature_dim,
-                use_lbp=self.use_lbp
-            )
-            extractor.set_cache(cache)
+            extractor = FeatureExtractor49DCompatible(window_size=32)
             
             # 滑动窗口
             h, w = image.shape[:2]
             window_size = 32
-            stride = 16  # 可以增大到 32 进一步加速
+            stride = 16
             half = window_size // 2
             
             extract_start = time.time()
@@ -272,7 +259,10 @@ class MLDetector:
             
             for y in range(half, h - half, stride):
                 for x in range(half, w - half, stride):
-                    feat = extractor.extract_from_cache(y, x)
+                    patch = image[y-half:y+half, x-half:x+half]
+                    if patch.shape[0] != window_size or patch.shape[1] != window_size:
+                        continue
+                    feat = extractor.extract(patch)
                     features_list.append(feat)
                     positions.append((y, x))
             
@@ -280,7 +270,7 @@ class MLDetector:
             preprocess_time = time.time() - preprocess_start
             result['preprocess_time'] = preprocess_time
             
-            print(f"特征提取统计: 缓存={cache_time*1000:.1f}ms, 窗口提取={extract_time*1000:.1f}ms, "
+            print(f"特征提取统计: 窗口提取={extract_time*1000:.1f}ms, "
                   f"窗口数={len(features_list)}, 总预处理={preprocess_time*1000:.1f}ms")
             
             if len(features_list) == 0:
@@ -293,14 +283,11 @@ class MLDetector:
             features_scaled = self.pixel_scaler.transform(features)
             
             # XGBoost GPU 推理
-            # 注意：XGBoost 会自动使用 GPU，但输入数据在 CPU 时会有数据传输
-            # 这是正常的，只要模型在 GPU 上，推理就会加速
             try:
                 import xgboost as xgb
                 import time as time_module
                 gpu_start = time_module.time()
                 
-                # 使用 predict 返回概率（二分类返回正类概率）
                 booster = self.pixel_model.get_booster()
                 dmat = xgb.DMatrix(features_scaled)
                 proba = booster.predict(dmat)
@@ -309,7 +296,6 @@ class MLDetector:
                 print(f"XGBoost GPU 推理: {len(features_scaled)} 样本, 耗时: {gpu_time*1000:.1f}ms")
                 
             except Exception as e:
-                # 回退到标准推理
                 print(f"XGBoost 推理失败: {e}")
                 proba = self.pixel_model.predict_proba(features_scaled)[:, 1]
             
@@ -317,13 +303,8 @@ class MLDetector:
             result['inference_time'] = inference_time
             
             # 调试信息
-            tamper_count = np.sum(proba > 0.5) if self.pixel_threshold else np.sum(proba > np.percentile(proba, 95))
             print(f"推理统计: 样本数={len(proba)}, 预测概率范围=[{proba.min():.4f}, {proba.max():.4f}], "
                   f"平均={proba.mean():.4f}, 推理耗时={inference_time*1000:.1f}ms")
-            if self.pixel_threshold:
-                print(f"固定阈值={self.pixel_threshold}, 大于阈值的样本数={tamper_count} ({tamper_count/len(proba)*100:.1f}%)")
-            else:
-                print(f"动态阈值策略: 使用百分位阈值")
             
             # 生成掩码
             mask = self._generate_mask(proba, positions, (h, w))
@@ -381,34 +362,16 @@ class MLDetector:
         if w - edge_size > 0 and count_map[:, w - edge_size - 1].any():
             heatmap[:, w - edge_size:] = np.tile(heatmap[:, w - edge_size - 1].reshape(-1, 1), (1, edge_size))
         
-        # ========== 动态阈值策略 ==========
-        heatmap_max = heatmap.max()
-        heatmap_mean = heatmap.mean()
-        
-        if self.pixel_threshold is not None:
-            # 使用固定阈值
-            threshold = self.pixel_threshold
-        else:
-            # 动态阈值策略:
-            # 1. 如果最大值很高(>0.5)，使用 max * 0.5
-            # 2. 如果最大值较低(<0.5)，使用百分位阈值 (top 10%)
-            if heatmap_max > 0.5:
-                threshold = heatmap_max * 0.5
-            elif heatmap_max > 0.1:
-                threshold = heatmap_max * 0.3
-            else:
-                # 最大值很低，使用百分位阈值
-                threshold = np.percentile(heatmap[heatmap > 0], 90) if np.any(heatmap > 0) else 0.01
-        
-        # 确保阈值合理
-        threshold = max(threshold, 0.01)  # 最小阈值 0.01
+        # ========== 阈值处理 ==========
+        # 使用保存的阈值
+        threshold = self.pixel_threshold if self.pixel_threshold is not None else 0.5
         
         # 二值化
         binary_mask = (heatmap > threshold).astype(np.uint8) * 255
         
         print(f"Mask 生成: heatmap范围=[{heatmap.min():.4f}, {heatmap.max():.4f}], "
               f"均值={heatmap_mean:.4f}")
-        print(f"  阈值策略: {'固定' if self.pixel_threshold else '动态'}, 阈值={threshold:.4f}")
+        print(f"  阈值: {threshold:.4f}")
         print(f"  非零像素: {np.sum(binary_mask > 0)}")
         
         # 后处理
