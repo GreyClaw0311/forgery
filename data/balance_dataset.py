@@ -192,6 +192,11 @@ class DatasetBalancer:
             target_good = int(total_tampered / self.target_ratio)
             result = self._augment_oversample(target_good)
         
+        elif self.strategy == 'equal':
+            # 等量平衡: 每个类别都达到目标数量
+            target_count = int(self.target_ratio)  # 这里 ratio 用作目标数量
+            result = self._equal_balance(target_count)
+        
         else:
             raise ValueError(f"未知策略: {self.strategy}")
         
@@ -314,6 +319,46 @@ class DatasetBalancer:
             'tamper_good_ratio': round(total_tampered / target_good, 2)
         }
     
+    def _equal_balance(self, target_count: int) -> Dict:
+        """
+        等量平衡 - 每个类别都调整到目标数量
+        
+        Args:
+            target_count: 每个类别的目标数量
+        
+        Returns:
+            平衡后的统计信息
+        """
+        print(f"\n等量平衡 (每类 {target_count} 张):")
+        
+        # 统计采样方式
+        easy_action = "欠采样" if len(self.easy_images) > target_count else "过采样"
+        diff_action = "欠采样" if len(self.difficult_images) > target_count else "过采样"
+        good_action = "欠采样" if len(self.good_images) > target_count else "过采样增强"
+        
+        print(f"  easy: {len(self.easy_images)} → {target_count} ({easy_action})")
+        print(f"  difficult: {len(self.difficult_images)} → {target_count} ({diff_action})")
+        print(f"  good: {len(self.good_images)} → {target_count} ({good_action})")
+        
+        total_tampered = target_count * 2  # easy + difficult
+        total = target_count * 3
+        
+        print(f"\n最终分布:")
+        print(f"  easy: {target_count} 张")
+        print(f"  difficult: {target_count} 张")
+        print(f"  good: {target_count} 张")
+        print(f"  总计: {total} 张")
+        print(f"  篡改:正常 = {total_tampered}:{target_count} = {total_tampered/target_count:.0f}:1")
+        
+        return {
+            'easy': target_count,
+            'difficult': target_count,
+            'tampered': total_tampered,
+            'good': target_count,
+            'total': total,
+            'tamper_good_ratio': 2.0
+        }
+    
     def export_dataset(self):
         """导出平衡后的数据集"""
         print("\n" + "=" * 60)
@@ -344,7 +389,20 @@ class DatasetBalancer:
         self._copy_images(sampled_diff, 'difficult')
         
         # 处理正常样本
-        if self.strategy in ['oversample', 'hybrid', 'augment']:
+        if self.strategy == 'equal':
+            # 等量平衡模式
+            print(f"\n处理各类别 (目标各 {target_good} 张)...")
+            
+            # easy: 欠采样或过采样
+            self._copy_with_balance(self.easy_images, 'easy', target_easy)
+            
+            # difficult: 欠采样或过采样
+            self._copy_with_balance(self.difficult_images, 'difficult', target_diff)
+            
+            # good: 增强过采样
+            self._copy_with_oversample(self.good_images, 'good', target_good, use_augment=True)
+            
+        elif self.strategy in ['oversample', 'hybrid', 'augment']:
             # 过采样
             print(f"\n复制正常样本 (过采样到 {target_good} 张)...")
             self._copy_with_oversample(self.good_images, 'good', target_good, use_augment=(self.strategy=='augment'))
@@ -379,6 +437,52 @@ class DatasetBalancer:
         for img_path in tqdm(images, desc=f"复制 {category}"):
             if img_path.exists():
                 shutil.copy2(img_path, output_dir / img_path.name)
+    
+    def _copy_with_balance(self, images: List[Path], category: str, target_count: int):
+        """
+        平衡复制 - 支持欠采样和过采样
+        
+        Args:
+            images: 图片路径列表
+            category: 类别名称
+            target_count: 目标数量
+        """
+        output_dir = self.output_dir / category / 'images'
+        
+        if len(images) == 0:
+            return
+        
+        if len(images) >= target_count:
+            # 欠采样
+            sampled = random.sample(images, target_count)
+            print(f"  {category}: 欠采样 {len(images)} → {target_count}")
+            for img_path in tqdm(sampled, desc=f"复制 {category}"):
+                if img_path.exists():
+                    shutil.copy2(img_path, output_dir / img_path.name)
+        else:
+            # 过采样 (简单复制)
+            print(f"  {category}: 过采样 {len(images)} → {target_count}")
+            
+            # 先复制所有原始图片
+            for img_path in tqdm(images, desc=f"复制原始 {category}"):
+                if img_path.exists():
+                    shutil.copy2(img_path, output_dir / img_path.name)
+            
+            # 额外复制
+            copies_needed = target_count - len(images)
+            idx = 0
+            while idx < copies_needed:
+                for img_path in images:
+                    if idx >= copies_needed:
+                        break
+                    if not img_path.exists():
+                        continue
+                    
+                    stem = img_path.stem
+                    suffix = img_path.suffix
+                    new_name = f"{stem}_dup{idx:04d}{suffix}"
+                    shutil.copy2(img_path, output_dir / new_name)
+                    idx += 1
     
     def _copy_with_oversample(self, images: List[Path], category: str, target_count: int, use_augment: bool = False):
         """过采样复制图片"""
@@ -479,17 +583,17 @@ def main():
     # 仅分析数据分布
     python balance_dataset.py --source /path/to/data --analyze-only
     
-    # 欠采样到 2:1 比例
+    # 等量平衡 (推荐) - 每个类别3000张
     python balance_dataset.py --source /path/to/data --output /path/to/balanced \\
-        --strategy undersample --ratio 2
+        --strategy equal --ratio 3000
     
-    # 混合采样到 3:1 比例 (推荐)
+    # 混合采样到 3:1 比例
     python balance_dataset.py --source /path/to/data --output /path/to/balanced \\
         --strategy hybrid --ratio 3
     
-    # 增强过采样到 2:1 比例
+    # 增强过采样到 4:1 比例
     python balance_dataset.py --source /path/to/data --output /path/to/balanced \\
-        --strategy augment --ratio 2
+        --strategy augment --ratio 4
         """
     )
     
@@ -497,11 +601,11 @@ def main():
                         help='源数据目录 (包含 easy/, difficult/, good/)')
     parser.add_argument('--output', type=str, default=None,
                         help='输出目录 (默认: 源目录_balanced)')
-    parser.add_argument('--strategy', type=str, default='hybrid',
-                        choices=['undersample', 'oversample', 'hybrid', 'augment'],
-                        help='平衡策略 (default: hybrid)')
-    parser.add_argument('--ratio', type=float, default=2.0,
-                        help='目标比例 (篡改:正常) (default: 2.0)')
+    parser.add_argument('--strategy', type=str, default='equal',
+                        choices=['undersample', 'oversample', 'hybrid', 'augment', 'equal'],
+                        help='平衡策略 (default: equal)')
+    parser.add_argument('--ratio', type=float, default=3000,
+                        help='目标比例或数量: ratio策略时为比例(如3表示3:1), equal策略时为每类数量(如3000) (default: 3000)')
     parser.add_argument('--seed', type=int, default=42,
                         help='随机种子 (default: 42)')
     parser.add_argument('--analyze-only', action='store_true',
