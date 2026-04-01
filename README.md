@@ -638,24 +638,58 @@ python train/pixel_segmentation/train_pixel_bbox.py \
 
 ### 1. 安装依赖
 
-```bash
-# 基础依赖
-pip install -r requirements.txt
+**方式一：使用 release 目录的 requirements.txt (推荐)**
 
-# GPU 支持 - PyTorch + CUDA 12.1 (推荐)
-pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+```bash
+# 创建 Conda 环境
+conda create -n forgrey_server python=3.12
+conda activate forgrey_server
+
+# 安装服务依赖 (包含 GPU 支持)
+cd release
+pip install -r requirements.txt
 
 # 验证 GPU
 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 ```
 
-### 2. CUDA 版本兼容
+**方式二：使用项目根目录的 requirements.txt**
+
+```bash
+# 基础依赖
+pip install -r requirements.txt
+
+# GPU 支持 - PyTorch + CUDA 13.0 (当前使用版本)
+pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu130
+
+# 验证 GPU
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+```
+
+### 2. 实际运行环境 (2026-03-31 验证)
+
+| 包名 | 版本 | 用途 |
+|------|------|------|
+| fastapi | 0.135.2 | Web 框架 |
+| uvicorn | 0.42.0 | ASGI 服务器 |
+| numpy | 2.2.6 | 数值计算 |
+| opencv-python | 4.13.0.92 | 图像处理 |
+| scikit-learn | 1.7.2 | 机器学习 |
+| xgboost | 3.2.0 | XGBoost (GPU) |
+| lightgbm | 4.6.0 | LightGBM |
+| torch | 2.11.0 | PyTorch (CUDA 13.0) |
+| scipy | 1.15.3 | 科学计算 |
+
+**完整环境包列表**: 见 `release/requirements.txt`
+
+### 3. CUDA 版本兼容
 
 | NVIDIA Driver | 支持 CUDA | 推荐 PyTorch |
 |---------------|-----------|--------------|
 | 535.x | CUDA 12.2 | PyTorch 2.4.0 + cu121 |
 | 545.x | CUDA 12.3 | PyTorch 2.4.0 + cu121 |
 | 550.x | CUDA 12.4 | PyTorch 2.5.0 + cu124 |
+| **560.x+** | **CUDA 13.0** | **PyTorch 2.11.0 + cu130** ⭐当前使用
 
 ### 3. 常见问题
 
