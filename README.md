@@ -171,6 +171,44 @@ python server_forgrey.py          # 默认端口 8000
 python server_forgrey.py --port 8080  # 指定端口
 ```
 
+**方式三：Docker 部署 ⭐推荐**
+
+```bash
+# 构建镜像
+docker build -t forgrey:v1.0.0 .
+
+# 运行容器 (挂载模型)
+docker run -d -p 8000:8000 \
+  -v /path/to/models:/app/forgrey/models \
+  --name forgrey forgrey:v1.0.0
+
+# GPU 支持运行
+docker run -d -p 8000:8000 \
+  --gpus all \
+  -v /path/to/models:/app/forgrey/models \
+  --name forgrey forgrey:v1.0.0
+
+# 查看日志
+docker logs -f forgrey
+
+# 停止容器
+docker stop forgrey
+```
+
+**Docker 部署说明:**
+
+| 参数 | 说明 |
+|------|------|
+| `-p 8000:8000` | 端口映射 |
+| `-v /path/to/models:/app/forgrey/models` | 模型文件挂载 |
+| `--gpus all` | GPU 支持 (可选) |
+| `--name forgrey` | 容器名称 |
+
+**注意事项:**
+- 模型文件需预先准备并挂载
+- GPU 支持需要 nvidia-docker 或 docker 19.03+
+- 内存建议 8GB+
+
 **服务特性:**
 - 默认监听 `0.0.0.0:8000`
 - 默认 **8个 Worker** 并发处理
