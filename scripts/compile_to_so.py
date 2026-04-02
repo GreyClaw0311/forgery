@@ -37,21 +37,64 @@ SOURCE_DIR = "release"
 OUTPUT_DIR = "release_so"
 
 # 需要编译的 Python 文件 (相对路径)
+# 注意: __init__.py 文件通常只有导入语句，可以选择性编译
 PY_FILES_TO_COMPILE = [
     "server_forgrey.py",
     "debug_service.py",
     "debug_response.py",
     "test_service.py",
-    "__init__.py",
-    "algorithms/__init__.py",
+    # "algorithms/__init__.py",  # 跳过编译，有复杂导入语句，创建简化版
     "algorithms/ela_detector.py",
     "algorithms/dct_detector.py",
     "algorithms/fusion_detector.py",
     "algorithms/ml_detector.py",
     "algorithms/features.py",
-    "utils/__init__.py",
+    # "utils/__init__.py",  # 跳过编译，只有注释
     "utils/postprocess.py",
 ]
+
+# 需要创建简化版 __init__.py 的文件 (不编译，复制简化内容)
+# 这些文件保留必要的导入/导出，但不包含完整代码
+INIT_FILES_TO_COPY = {
+    "__init__.py": '''"""
+图像篡改检测服务 - Release 模块 (编译版)
+"""
+
+__version__ = "1.0.0"
+''',
+    "algorithms/__init__.py": '''"""
+图像篡改检测算法模块 (编译版)
+"""
+
+# 编译版: 导入编译后的模块
+from .ela_detector import ELADetector
+from .dct_detector import DCTBlockDetector
+from .fusion_detector import AdaptiveFusion
+from .features import extract_all_features, PixelFeatureExtractor
+
+# 兼容性别名
+DCTDetector = DCTBlockDetector
+FusionDetector = AdaptiveFusion
+
+__all__ = [
+    'ELADetector', 
+    'DCTBlockDetector', 
+    'DCTDetector',
+    'AdaptiveFusion',
+    'FusionDetector',
+    'extract_all_features',
+    'PixelFeatureExtractor'
+]
+''',
+    "utils/__init__.py": '''"""
+工具模块 (编译版)
+"""
+
+from .postprocess import PostProcessor, AdaptivePostProcessor, post_process
+
+__all__ = ['PostProcessor', 'AdaptivePostProcessor', 'post_process']
+''',
+}
 
 # 需要直接复制的文件 (不编译)
 COPY_FILES = [
@@ -209,8 +252,13 @@ def compile_py_to_so(py_file: str, source_dir: str, output_dir: str) -> bool:
             print(f"错误: {result.stderr}")
             return False
         
-        # 查找生成的 .so 文件
-        so_files = list(Path(tmp_dir).glob(f"{module_name}*.so"))
+        # 关键修复: 在源文件所在目录查找 .so 文件 (不是临时目录根目录)
+        so_search_dir = tmp_source_dir if tmp_source_dir else tmp_dir
+        so_files = list(Path(so_search_dir).glob(f"{module_name}*.so"))
+        
+        if not so_files:
+            # 如果在子目录没找到，尝试在整个临时目录搜索
+            so_files = list(Path(tmp_dir).rglob(f"{module_name}*.so"))
         
         if not so_files:
             print(f"✗ 未找到编译输出: {module_name}.so")
@@ -230,7 +278,27 @@ def compile_py_to_so(py_file: str, source_dir: str, output_dir: str) -> bool:
         return True
 
 
-def copy_non_py_files(source_dir: str, output_dir: str):
+def copy_init_files(output_dir: str):
+    """
+    复制简化版 __init__.py 文件
+    
+    这些文件不编译，直接复制简化内容（保留必要的导入）
+    """
+    print("\n创建简化版 __init__.py 文件...")
+    
+    output_dir_abs = os.path.abspath(output_dir)
+    
+    for init_file, content in INIT_FILES_TO_COPY.items():
+        output_path = os.path.join(output_dir_abs, init_file)
+        output_subdir = os.path.dirname(output_path)
+        
+        if output_subdir and not os.path.exists(output_subdir):
+            os.makedirs(output_subdir)
+        
+        with open(output_path, 'w') as f:
+            f.write(content)
+        
+        print(f"✓ 创建: {init_file}")
     """复制非 Python 文件"""
     print("\n复制非 Python 文件...")
     
@@ -344,8 +412,9 @@ def verify_compilation(output_dir: str) -> bool:
     
     检查:
     1. 所有 .so 文件是否存在
-    2. 模型文件是否复制
-    3. 启动脚本是否正确
+    2. __init__.py 文件是否存在
+    3. 模型文件是否复制
+    4. 启动脚本是否正确
     """
     print("\n验证编译结果...")
     
@@ -366,6 +435,19 @@ def verify_compilation(output_dir: str) -> bool:
     
     print(f"\n编译文件统计: {so_count}/{len(PY_FILES_TO_COMPILE)}")
     
+    # 检查 __init__.py 文件
+    init_count = 0
+    for init_file in INIT_FILES_TO_COPY.keys():
+        init_path = os.path.join(output_dir_abs, init_file)
+        
+        if os.path.exists(init_path):
+            init_count += 1
+            print(f"✓ {init_file}")
+        else:
+            print(f"✗ {init_file} 不存在")
+    
+    print(f"\n__init__.py 文件统计: {init_count}/{len(INIT_FILES_TO_COPY)}")
+    
     # 检查模型目录
     models_dir = os.path.join(output_dir_abs, "models")
     if os.path.exists(models_dir):
@@ -384,7 +466,7 @@ def verify_compilation(output_dir: str) -> bool:
         print(f"✗ 启动脚本不存在")
         return False
     
-    return so_count == len(PY_FILES_TO_COMPILE)
+    return so_count == len(PY_FILES_TO_COMPILE) and init_count == len(INIT_FILES_TO_COPY)
 
 
 def test_import(output_dir: str) -> bool:
@@ -467,13 +549,16 @@ def main():
     print()
     print(f"编译完成: {success_count}/{len(PY_FILES_TO_COMPILE)}")
     
-    # 4. 复制非 Python 文件
+    # 4. 创建简化版 __init__.py 文件
+    copy_init_files(output_dir_abs)
+    
+    # 5. 复制非 Python 文件
     copy_non_py_files(source_dir_abs, output_dir_abs)
     
-    # 5. 创建启动脚本
+    # 6. 创建启动脚本
     create_launcher_script(output_dir_abs)
     
-    # 6. 验证编译结果
+    # 7. 验证编译结果
     if verify_compilation(output_dir_abs):
         print("\n" + "=" * 60)
         print("✓ 编译成功!")
@@ -489,7 +574,7 @@ def main():
         print("=" * 60)
         sys.exit(1)
     
-    # 7. 创建导入测试脚本
+    # 8. 创建导入测试脚本
     test_import(output_dir_abs)
 
 
