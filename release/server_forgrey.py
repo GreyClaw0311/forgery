@@ -37,6 +37,8 @@
     - tamper_regions: 篡改区域矩形坐标列表
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import base64
