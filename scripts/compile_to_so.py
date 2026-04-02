@@ -127,22 +127,26 @@ def check_dependencies():
         print("✗ numpy 未安装，请运行: pip install numpy")
         sys.exit(1)
     
-    # 检查源目录
-    if not os.path.exists(SOURCE_DIR):
-        print(f"✗ 源目录不存在: {SOURCE_DIR}")
+    # 检查源目录 (使用绝对路径)
+    source_dir_abs = os.path.abspath(SOURCE_DIR)
+    if not os.path.exists(source_dir_abs):
+        print(f"✗ 源目录不存在: {source_dir_abs}")
         sys.exit(1)
-    print(f"✓ 源目录存在: {SOURCE_DIR}")
+    print(f"✓ 源目录存在: {source_dir_abs}")
     
     print()
 
 
 def clean_output_dir():
     """清理输出目录"""
-    if os.path.exists(OUTPUT_DIR):
-        print(f"清理输出目录: {OUTPUT_DIR}")
-        shutil.rmtree(OUTPUT_DIR)
-    os.makedirs(OUTPUT_DIR)
-    print(f"✓ 创建输出目录: {OUTPUT_DIR}")
+    # 使用绝对路径
+    output_dir_abs = os.path.abspath(OUTPUT_DIR)
+    
+    if os.path.exists(output_dir_abs):
+        print(f"清理输出目录: {output_dir_abs}")
+        shutil.rmtree(output_dir_abs)
+    os.makedirs(output_dir_abs)
+    print(f"✓ 创建输出目录: {output_dir_abs}")
     print()
 
 
@@ -158,7 +162,10 @@ def compile_py_to_so(py_file: str, source_dir: str, output_dir: str) -> bool:
     Returns:
         是否成功
     """
-    source_path = os.path.join(source_dir, py_file)
+    # 使用绝对路径
+    source_dir_abs = os.path.abspath(source_dir)
+    output_dir_abs = os.path.abspath(output_dir)
+    source_path = os.path.join(source_dir_abs, py_file)
     
     if not os.path.exists(source_path):
         print(f"⚠ 源文件不存在: {source_path}")
@@ -168,17 +175,17 @@ def compile_py_to_so(py_file: str, source_dir: str, output_dir: str) -> bool:
     
     # 创建临时目录
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # 生成 setup.py
+        # 生成 setup.py (使用绝对路径)
         module_name = Path(py_file).stem
         setup_content = SETUP_TEMPLATE.format(
             module_name=module_name,
-            source_file=source_path
+            source_file=source_path  # 使用绝对路径
         )
         setup_path = os.path.join(tmp_dir, "setup.py")
         with open(setup_path, 'w') as f:
             f.write(setup_content)
         
-        # 运行编译
+        # 运行编译 (在临时目录执行 setup.py)
         result = subprocess.run(
             [sys.executable, setup_path, "build_ext", "--inplace"],
             cwd=tmp_dir,
@@ -200,7 +207,7 @@ def compile_py_to_so(py_file: str, source_dir: str, output_dir: str) -> bool:
         
         # 复制 .so 文件到输出目录 (保持目录结构)
         so_file = so_files[0]
-        output_path = os.path.join(output_dir, py_file.replace('.py', '.so'))
+        output_path = os.path.join(output_dir_abs, py_file.replace('.py', '.so'))
         output_subdir = os.path.dirname(output_path)
         
         if output_subdir and not os.path.exists(output_subdir):
@@ -216,17 +223,21 @@ def copy_non_py_files(source_dir: str, output_dir: str):
     """复制非 Python 文件"""
     print("\n复制非 Python 文件...")
     
+    # 使用绝对路径
+    source_dir_abs = os.path.abspath(source_dir)
+    output_dir_abs = os.path.abspath(output_dir)
+    
     # 创建模型目录结构 (即使源目录为空)
     for model_dir in MODEL_DIRS:
-        dst = os.path.join(output_dir, model_dir)
+        dst = os.path.join(output_dir_abs, model_dir)
         if not os.path.exists(dst):
             os.makedirs(dst)
             print(f"✓ 创建目录: {model_dir}")
     
     # 复制单个文件
     for file_path in COPY_FILES:
-        src = os.path.join(source_dir, file_path)
-        dst = os.path.join(output_dir, file_path)
+        src = os.path.join(source_dir_abs, file_path)
+        dst = os.path.join(output_dir_abs, file_path)
         
         if os.path.exists(src):
             dst_dir = os.path.dirname(dst)
@@ -239,8 +250,8 @@ def copy_non_py_files(source_dir: str, output_dir: str):
     
     # 复制目录 (包括模型文件)
     for dir_path in COPY_DIRS:
-        src = os.path.join(source_dir, dir_path)
-        dst = os.path.join(output_dir, dir_path)
+        src = os.path.join(source_dir_abs, dir_path)
+        dst = os.path.join(output_dir_abs, dir_path)
         
         # 目标目录已创建，复制文件内容
         if os.path.exists(src):
@@ -267,6 +278,9 @@ def create_launcher_script(output_dir: str):
     """
     print("\n创建启动脚本...")
     
+    # 使用绝对路径
+    output_dir_abs = os.path.abspath(output_dir)
+    
     # 创建 Python 入口脚本
     launcher_content = '''#!/usr/bin/env python3
 """
@@ -288,14 +302,14 @@ if __name__ == '__main__':
     main()
 '''
     
-    launcher_path = os.path.join(output_dir, "launcher.py")
+    launcher_path = os.path.join(output_dir_abs, "launcher.py")
     with open(launcher_path, 'w') as f:
         f.write(launcher_content)
     
     print(f"✓ 创建启动入口: launcher.py")
     
     # 更新 start.sh (使用 launcher.py 启动)
-    start_sh_path = os.path.join(output_dir, "start.sh")
+    start_sh_path = os.path.join(output_dir_abs, "start.sh")
     
     if os.path.exists(start_sh_path):
         with open(start_sh_path, 'r') as f:
@@ -324,11 +338,14 @@ def verify_compilation(output_dir: str) -> bool:
     """
     print("\n验证编译结果...")
     
+    # 使用绝对路径
+    output_dir_abs = os.path.abspath(output_dir)
+    
     # 检查 .so 文件
     so_count = 0
     for py_file in PY_FILES_TO_COMPILE:
         so_file = py_file.replace('.py', '.so')
-        so_path = os.path.join(output_dir, so_file)
+        so_path = os.path.join(output_dir_abs, so_file)
         
         if os.path.exists(so_path):
             so_count += 1
@@ -339,7 +356,7 @@ def verify_compilation(output_dir: str) -> bool:
     print(f"\n编译文件统计: {so_count}/{len(PY_FILES_TO_COMPILE)}")
     
     # 检查模型目录
-    models_dir = os.path.join(output_dir, "models")
+    models_dir = os.path.join(output_dir_abs, "models")
     if os.path.exists(models_dir):
         print(f"✓ 模型目录存在")
     else:
@@ -347,8 +364,8 @@ def verify_compilation(output_dir: str) -> bool:
         return False
     
     # 检查启动脚本
-    launcher_path = os.path.join(output_dir, "launcher.py")
-    start_sh_path = os.path.join(output_dir, "start.sh")
+    launcher_path = os.path.join(output_dir_abs, "launcher.py")
+    start_sh_path = os.path.join(output_dir_abs, "start.sh")
     
     if os.path.exists(launcher_path) and os.path.exists(start_sh_path):
         print(f"✓ 启动脚本存在")
@@ -366,6 +383,9 @@ def test_import(output_dir: str) -> bool:
     验证 .so 文件是否可以正确导入
     """
     print("\n测试模块导入...")
+    
+    # 使用绝对路径
+    output_dir_abs = os.path.abspath(output_dir)
     
     test_script = '''
 import sys
@@ -392,9 +412,9 @@ except ImportError as e:
     sys.exit(1)
 '''
     
-    test_path = os.path.join(output_dir, "test_import.py")
+    test_path = os.path.join(output_dir_abs, "test_import.py")
     with open(test_path, 'w') as f:
-        f.write(test_script.format(output_dir=output_dir))
+        f.write(test_script.format(output_dir=output_dir_abs))
     
     print(f"✓ 创建测试脚本: test_import.py")
     print("  请在目标服务器运行: python test_import.py")
@@ -416,32 +436,40 @@ def main():
     # 2. 清理输出目录
     clean_output_dir()
     
+    # 获取绝对路径
+    source_dir_abs = os.path.abspath(SOURCE_DIR)
+    output_dir_abs = os.path.abspath(OUTPUT_DIR)
+    
+    print(f"源目录 (绝对路径): {source_dir_abs}")
+    print(f"输出目录 (绝对路径): {output_dir_abs}")
+    print()
+    
     # 3. 编译 Python 文件
     print("开始编译 Python 文件...")
     print()
     
     success_count = 0
     for py_file in PY_FILES_TO_COMPILE:
-        if compile_py_to_so(py_file, SOURCE_DIR, OUTPUT_DIR):
+        if compile_py_to_so(py_file, source_dir_abs, output_dir_abs):
             success_count += 1
     
     print()
     print(f"编译完成: {success_count}/{len(PY_FILES_TO_COMPILE)}")
     
     # 4. 复制非 Python 文件
-    copy_non_py_files(SOURCE_DIR, OUTPUT_DIR)
+    copy_non_py_files(source_dir_abs, output_dir_abs)
     
     # 5. 创建启动脚本
-    create_launcher_script(OUTPUT_DIR)
+    create_launcher_script(output_dir_abs)
     
     # 6. 验证编译结果
-    if verify_compilation(OUTPUT_DIR):
+    if verify_compilation(output_dir_abs):
         print("\n" + "=" * 60)
         print("✓ 编译成功!")
         print("=" * 60)
-        print(f"\n输出目录: {OUTPUT_DIR}")
+        print(f"\n输出目录: {output_dir_abs}")
         print("\n启动服务:")
-        print(f"  cd {OUTPUT_DIR}")
+        print(f"  cd {output_dir_abs}")
         print("  bash start.sh")
         print()
     else:
@@ -451,7 +479,7 @@ def main():
         sys.exit(1)
     
     # 7. 创建导入测试脚本
-    test_import(OUTPUT_DIR)
+    test_import(output_dir_abs)
 
 
 if __name__ == '__main__':
