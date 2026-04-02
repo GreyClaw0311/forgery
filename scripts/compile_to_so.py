@@ -175,11 +175,22 @@ def compile_py_to_so(py_file: str, source_dir: str, output_dir: str) -> bool:
     
     # 创建临时目录
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # 生成 setup.py (使用绝对路径)
+        # 关键修复: 将源文件复制到临时目录，保持相同的目录结构
+        tmp_source_path = os.path.join(tmp_dir, py_file)
+        tmp_source_dir = os.path.dirname(tmp_source_path)
+        
+        # 创建临时目录结构
+        if tmp_source_dir and not os.path.exists(tmp_source_dir):
+            os.makedirs(tmp_source_dir)
+        
+        # 复制源文件到临时目录
+        shutil.copy2(source_path, tmp_source_path)
+        
+        # 生成 setup.py (使用临时目录中的源文件)
         module_name = Path(py_file).stem
         setup_content = SETUP_TEMPLATE.format(
             module_name=module_name,
-            source_file=source_path  # 使用绝对路径
+            source_file=tmp_source_path  # 使用临时目录中的源文件
         )
         setup_path = os.path.join(tmp_dir, "setup.py")
         with open(setup_path, 'w') as f:
