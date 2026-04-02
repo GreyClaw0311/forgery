@@ -504,7 +504,7 @@ try:
     print("\\n所有模块导入测试通过!")
     
 except ImportError as e:
-    print(f"✗ 导入失败: {e}")
+    print(f"✗ 导入失败: {{e}}")
     sys.exit(1)
 '''
     
