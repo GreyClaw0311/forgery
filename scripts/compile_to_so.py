@@ -140,6 +140,11 @@ setup(
 )
 '''
 
+# 需要添加 __future__.annotations 的文件 (解决 FastAPI Form/File 等类型注解问题)
+FILES_NEED_FUTURE_ANNOTATIONS = [
+    "server_forgrey.py",
+]
+
 # ==================== 工具函数 ====================
 
 def check_dependencies():
@@ -227,7 +232,25 @@ def compile_py_to_so(py_file: str, source_dir: str, output_dir: str) -> bool:
             os.makedirs(tmp_source_dir)
         
         # 复制源文件到临时目录
-        shutil.copy2(source_path, tmp_source_path)
+        # 对于特定文件，添加 __future__.annotations 解决类型注解问题
+        with open(source_path, 'r') as f:
+            source_content = f.read()
+        
+        # 检查是否需要添加 __future__.annotations
+        if py_file in FILES_NEED_FUTURE_ANNOTATIONS:
+            if 'from __future__ import annotations' not in source_content:
+                # 在第一个 import 或 from 之前添加
+                lines = source_content.split('\n')
+                insert_pos = 0
+                for i, line in enumerate(lines):
+                    if line.startswith('import ') or line.startswith('from '):
+                        insert_pos = i
+                        break
+                lines.insert(insert_pos, 'from __future__ import annotations')
+                source_content = '\n'.join(lines)
+        
+        with open(tmp_source_path, 'w') as f:
+            f.write(source_content)
         
         # 生成 setup.py (使用临时目录中的源文件)
         module_name = Path(py_file).stem
