@@ -299,6 +299,9 @@ def copy_init_files(output_dir: str):
             f.write(content)
         
         print(f"✓ 创建: {init_file}")
+
+
+def copy_non_py_files(source_dir: str, output_dir: str):
     """复制非 Python 文件"""
     print("\n复制非 Python 文件...")
     
