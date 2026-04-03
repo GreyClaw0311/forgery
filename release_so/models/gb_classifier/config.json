@@ -1,0 +1,20 @@
+{
+  "feature_names": [
+    "jpeg_block",
+    "contrast",
+    "saturation",
+    "jpeg_ghost",
+    "fft",
+    "cfa",
+    "edge",
+    "color",
+    "resampling",
+    "splicing"
+  ],
+  "optimal_threshold": 0.8999999999999999,
+  "model_type": "xgb",
+  "n_estimators": 300,
+  "learning_rate": 0.05,
+  "max_depth": 8,
+  "class_weight_multiplier": 2.0
+}

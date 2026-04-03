@@ -1,0 +1,22 @@
+{
+  "train_f1": 0.9915776986951365,
+  "test_f1": 0.9579352276957439,
+  "precision": 0.9951018303686517,
+  "recall": 0.9234449760765551,
+  "accuracy": 0.9391710030504217,
+  "fpr": 0.013639626704953339,
+  "fnr": 0.07655502392344497,
+  "best_threshold": 0.8999999999999999,
+  "train_time": 1.679762363433838,
+  "cv_f1": 0.9635161731059906,
+  "cv_f1_std": 0.0005135354374437695,
+  "timestamp": "2026-03-31T08:59:24.742176",
+  "config": {
+    "preset": "balanced",
+    "model_type": "xgb",
+    "n_estimators": 300,
+    "learning_rate": 0.05,
+    "max_depth": 8,
+    "class_weight_multiplier": 2.0
+  }
+}

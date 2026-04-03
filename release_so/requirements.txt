@@ -1,0 +1,50 @@
+# Forgrey 服务环境依赖
+# 测试日期: 2026-03-31
+# Python 环境: forgrey_server (Conda)
+
+# ==================== 核心依赖 ====================
+
+# Web 服务框架
+fastapi==0.135.2
+uvicorn==0.42.0
+python-multipart==0.0.22
+
+# 图像处理
+numpy==2.2.6
+opencv-python-headless==4.13.0.92
+pillow==12.1.1
+
+# 机器学习
+scikit-learn==1.7.2
+scipy==1.15.3
+lightgbm==4.6.0
+xgboost==3.2.0
+
+# GPU 支持 (CUDA 13.0)
+torch==2.11.0
+
+# HTTP 客户端 (测试脚本)
+requests==2.33.1
+
+# 工具库
+tqdm==4.67.3
+joblib==1.5.3
+
+# ==================== 间接依赖 ====================
+# 以下依赖会自动安装，无需手动指定
+# - starlette (fastapi)
+# - pydantic (fastapi)
+# - h11 (uvicorn)
+# - anyio (starlette)
+# - click (uvicorn)
+# - certifi, charset-normalizer, idna, urllib3 (requests)
+# - typing_extensions, pydantic_core, annotated-types (pydantic)
+
+# ==================== CUDA 相关 ====================
+# CUDA 包由 torch 自动安装，无需手动指定
+# nvidia-cublas, nvidia-cuda-runtime, nvidia-cudnn 等
+
+# ==================== 安装说明 ====================
+# 1. 创建 Conda 环境: conda create -n forgrey_server python=3.12
+# 2. 安装依赖: pip install -r requirements.txt
+# 3. 验证 GPU: python -c "import torch; print(torch.cuda.is_available())"
